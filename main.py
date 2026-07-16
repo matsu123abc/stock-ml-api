@@ -266,13 +266,21 @@ async function loadPrice(){
 
 async function loadHV(){
     const data = await fetch("/api/hv").then(r => r.json());
+
+    let text = "";
+
     if(data.hv){
-        document.getElementById("hv_20d").value = (data.hv * 100).toFixed(2);
-        document.getElementById("hvBox").innerHTML = `
-<b>【HV自動取得】</b><br>
-HV(20日): ${(data.hv * 100).toFixed(2)} %
-        `;
+        const vol = (data.hv * 100).toFixed(2);
+        document.getElementById("hv_20d").value = vol;
+        text = `volatility: ${vol} %`;
+    }else{
+        text = "volatility: データなし";
     }
+
+    document.getElementById("hvBox").innerHTML = `
+<b>【ヒストリカルボラ（20日）】</b><br>
+${text}
+    `;
 }
 
 function getInputData(){
