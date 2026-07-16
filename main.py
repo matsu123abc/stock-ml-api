@@ -3,11 +3,13 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import datetime
 import uuid
+import os
+import json
 import yfinance as yf
 import numpy as np
-import openai
+from openai import AzureOpenAI
 
-app = FastAPI(title="stock-ml-api (GPT+ML hybrid)")
+app = FastAPI(title="stock-ml-api (GPT+ML hybrid, AzureOpenAI)")
 
 # ============================================================
 # 1) データモデル
@@ -36,16 +38,22 @@ def ml_predict(m: MarketState):
     return "no_trade", 0.63
 
 # ============================================================
-# 3) GPT推論ロジック
+# 3) GPT推論（AzureOpenAI 実績コード）
 # ============================================================
 
-@app.post("/api/predict_strategy_gpt")
-def api_predict_strategy_gpt(m: MarketState):
+def gpt_predict(m: MarketState):
+
+    client = AzureOpenAI(
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
 
     prompt = f"""
-あなたはオプション戦略の専門家です。
+あなたはプロのオプション戦略アナリストです。
 以下の市場状態から最適な戦略を1つ選び、理由を説明してください。
 
+【市場データ】
 株価: {m.stock_price}
 ATM IV: {m.atm_iv}
 OTM IV: {m.otm_iv}
@@ -54,24 +62,41 @@ OTM IV: {m.otm_iv}
 残存日数: {m.days_to_expiry}
 HV: {m.hv_20d}
 
-出力形式:
-strategy: 戦略名
-expert_reason: 専門家としての理由
-beginner_explanation: 初心者向けの解説
-beginner_caution: 注意点
-next_step: 次の一手
+【出力形式】
+次の JSON のみを返す：
+
+{{
+  "strategy": "",
+  "expert_reason": "",
+  "beginner_explanation": "",
+  "beginner_caution": "",
+  "next_step": ""
+}}
 """
 
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
+        res = client.chat.completions.create(
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
         )
-        text = response["choices"][0]["message"]["content"]
-        return {"gpt_result": text}
 
-    except Exception as e:
-        return {"error": str(e)}
+        raw = res.choices[0].message.content.strip()
+
+        # JSON抽出
+        json_start = raw.find("{")
+        json_end = raw.rfind("}") + 1
+
+        if json_start == -1 or json_end == -1:
+            return None
+
+        json_text = raw[json_start:json_end]
+        json_text = json_text.replace("```json", "").replace("```", "").strip()
+
+        return json.loads(json_text)
+
+    except Exception:
+        return None
 
 # ============================================================
 # 4) GPT→ML 二本立て推論 API
@@ -81,16 +106,15 @@ next_step: 次の一手
 def api_predict_strategy(m: MarketState):
 
     # 1) GPT推論（優先）
-    gpt = api_predict_strategy_gpt(m)
+    gpt = gpt_predict(m)
 
-    if "gpt_result" in gpt:
-        if "strategy:" in gpt["gpt_result"]:
-            return {
-                "source": "GPT",
-                "result": gpt["gpt_result"],
-                "timestamp": datetime.datetime.utcnow(),
-                "request_id": str(uuid.uuid4())
-            }
+    if gpt and gpt.get("strategy"):
+        return {
+            "source": "GPT",
+            "result": gpt,
+            "timestamp": datetime.datetime.utcnow(),
+            "request_id": str(uuid.uuid4())
+        }
 
     # 2) GPTが曖昧なら ML推論
     strategy, confidence = ml_predict(m)
