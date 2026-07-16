@@ -3,13 +3,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import datetime
 import uuid
-from typing import List
 
-app = FastAPI(title="stock-ml-api (API→HTML→JS single-file)")
+app = FastAPI(title="stock-ml-api (single-file, Azure-safe)")
 
-# =========================
-# 1) API モデル / ロジック（先頭に配置）
-# =========================
+# ============================================================
+# 1) API（predict_strategy / log_market_state）
+# ============================================================
 
 class MarketState(BaseModel):
     stock_price: float
@@ -34,31 +33,34 @@ class LogMarketStateResponse(BaseModel):
     log_id: str
     saved_at: datetime.datetime
 
-# 簡易メモリストレージ（デモ用）
-MARKET_LOGS: List[LogMarketStateRequest] = []
+# メモリログ（デモ用）
+MARKET_LOGS = []
 
-def dummy_ml_predict(m: MarketState) -> tuple[str, float]:
+# -----------------------------
+# ダミーMLロジック（後で差し替え可能）
+# -----------------------------
+def ml_predict(m: MarketState):
     """
-    ダミー判定。実運用ではここをクラスタリング／モデル推論に差し替える。
-    戦略ラベル例: spread_hold, short_close, long_only, no_trade
+    stock-ml-api の戦略推論ロジック
+    （本番ではクラスタリングやモデル推論に差し替え）
     """
     if m.atm_iv > 0.3 and m.days_to_expiry <= 7:
-        return "short_close", 0.8
-    if m.atm_iv < 0.15 and m.days_to_expiry >= 20:
-        return "spread_hold", 0.75
-    if m.hv_20d > 0.25 and m.otm_iv > 0.3:
-        return "long_only", 0.7
-    return "no_trade", 0.6
+        return "short_close", 0.82
 
-@app.post("/predict-strategy", response_model=PredictStrategyResponse)
-def predict_strategy(market: MarketState):
-    """
-    入力：
-      - 株価, ATM IV, OTM IV, ガンマ, デルタ, 残存日数, HV
-    出力：
-      - strategy (ラベル), confidence (0-1), timestamp, request_id
-    """
-    strategy, confidence = dummy_ml_predict(market)
+    if m.atm_iv < 0.15 and m.days_to_expiry >= 20:
+        return "spread_hold", 0.76
+
+    if m.hv_20d > 0.25 and m.otm_iv > 0.3:
+        return "long_only", 0.71
+
+    return "no_trade", 0.63
+
+# -----------------------------
+# API: 戦略推論
+# -----------------------------
+@app.post("/api/predict_strategy", response_model=PredictStrategyResponse)
+def api_predict_strategy(m: MarketState):
+    strategy, confidence = ml_predict(m)
     return PredictStrategyResponse(
         strategy=strategy,
         confidence=confidence,
@@ -66,65 +68,123 @@ def predict_strategy(market: MarketState):
         request_id=str(uuid.uuid4())
     )
 
-@app.post("/log-market-state", response_model=LogMarketStateResponse)
-def log_market_state(log: LogMarketStateRequest):
-    """
-    学習用ログを蓄積するエンドポイント。
-    入力：市場状態 + chosen_strategy + note
-    """
-    MARKET_LOGS.append(log)
+# -----------------------------
+# API: ログ保存
+# -----------------------------
+@app.post("/api/log_market_state", response_model=LogMarketStateResponse)
+def api_log_market_state(req: LogMarketStateRequest):
+    MARKET_LOGS.append(req)
     return LogMarketStateResponse(
         log_id=str(uuid.uuid4()),
         saved_at=datetime.datetime.utcnow()
     )
 
-# =========================
-# 2) HTML（APIの後に配置）
-# =========================
+# ============================================================
+# 2) HTML（スマホ最適化 UI）
+# ============================================================
 
 INDEX_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <title>stock-ml-api UI</title>
-    <style>
-        body { font-family: Arial; margin: 24px; }
-        .row { margin: 6px 0; }
-        label { display:inline-block; width:140px; }
-        input { width:180px; padding:6px; }
-        button { padding:8px 14px; margin-right:8px; }
-        #result { margin-top:18px; white-space:pre-wrap; background:#f7f7f7; padding:12px; border-radius:6px; }
-    </style>
+<meta charset="UTF-8">
+<title>stock-ml-api</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+<style>
+  :root{
+    --bg:#ffffff;
+    --panel:#f2f2f2;
+    --accent:#0078ff;
+    --text:#000;
+  }
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+    padding:16px;
+    font-size:22px;
+  }
+  h2,h3{
+    font-size:28px;
+    margin-bottom:12px;
+  }
+  input{
+    width:100%;
+    font-size:24px;
+    padding:16px;
+    margin:10px 0;
+    border-radius:10px;
+    border:1px solid #ccc;
+    background:#fff;
+  }
+  button{
+    width:100%;
+    font-size:26px;
+    padding:18px;
+    border-radius:12px;
+    margin-top:16px;
+    background:var(--accent);
+    color:#fff;
+    border:none;
+  }
+  #resultBox, #logBox{
+    background:var(--panel);
+    padding:16px;
+    border-radius:10px;
+    font-size:24px;
+    margin-top:16px;
+  }
+</style>
 </head>
+
 <body>
-    <h2>構造判断型ML UI（手入力）</h2>
 
-    <div class="row"><label>株価</label><input id="stock_price" type="number" step="0.01"></div>
-    <div class="row"><label>ATM IV (%)</label><input id="atm_iv" type="number" step="0.01"></div>
-    <div class="row"><label>OTM IV (%)</label><input id="otm_iv" type="number" step="0.01"></div>
-    <div class="row"><label>ガンマ</label><input id="gamma" type="number" step="0.0001"></div>
-    <div class="row"><label>デルタ</label><input id="delta" type="number" step="0.01"></div>
-    <div class="row"><label>残存日数</label><input id="days_to_expiry" type="number"></div>
-    <div class="row"><label>HV (%)</label><input id="hv_20d" type="number" step="0.01"></div>
+<h2>stock-ml-api</h2>
 
-    <div style="margin-top:12px;">
-        <button onclick="predict()">推論する</button>
-        <button onclick="openLogDialog()">ログ保存（選択）</button>
-    </div>
+<h3>市場状態入力</h3>
 
-    <div id="result"></div>
+株価 S:<br>
+<input id="stock_price" type="number">
 
-    <!-- JS は下に埋め込み（次セクション） -->
-    <script>
+ATM IV (%):<br>
+<input id="atm_iv" type="number">
+
+OTM IV (%):<br>
+<input id="otm_iv" type="number">
+
+ガンマ:<br>
+<input id="gamma" type="number" step="0.0001">
+
+デルタ:<br>
+<input id="delta" type="number" step="0.01">
+
+残存日数:<br>
+<input id="days_to_expiry" type="number">
+
+HV (%):<br>
+<input id="hv_20d" type="number">
+
+<button onclick="predict()">推論する</button>
+
+<div id="resultBox"></div>
+
+<hr>
+
+<h3>ログ保存</h3>
+<button onclick="logState()">ログ保存する</button>
+<div id="logBox"></div>
+
+<script>
 """
 
-# =========================
-# 3) JS（HTMLの直後に配置）
-# =========================
+# ============================================================
+# 3) JS（HTML内に埋め込み）
+# ============================================================
 
 INDEX_HTML += """
-function getInputData() {
+function getInputData(){
     return {
         stock_price: parseFloat(document.getElementById("stock_price").value) || 0,
         atm_iv: (parseFloat(document.getElementById("atm_iv").value) || 0) / 100,
@@ -136,81 +196,70 @@ function getInputData() {
     };
 }
 
-function renderResult(text) {
-    document.getElementById("result").innerText = text;
-}
-
-function predict() {
+function predict(){
     const data = getInputData();
-    fetch("/predict-strategy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data)
+
+    fetch("/api/predict_strategy", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(data)
     })
-    .then(async res => {
-        if (!res.ok) {
-            const txt = await res.text();
-            throw new Error(txt || "HTTP error " + res.status);
-        }
-        return res.json();
-    })
+    .then(r => r.json())
     .then(result => {
-        const out = [
-            "【推論結果】",
-            "戦略: " + result.strategy,
-            "信頼度: " + result.confidence,
-            "時刻: " + result.timestamp,
-            "ID: " + result.request_id,
-            "",
-            "【入力JSON】",
-            JSON.stringify(data, null, 2)
-        ].join("\\n");
-        renderResult(out);
+        document.getElementById("resultBox").innerHTML = `
+<b>【推論結果】</b><br>
+戦略: ${result.strategy}<br>
+信頼度: ${result.confidence}<br>
+時刻: ${result.timestamp}<br>
+ID: ${result.request_id}<br><br>
+
+<b>【入力データ】</b><br>
+${JSON.stringify(data, null, 2)}
+        `;
     })
     .catch(err => {
-        renderResult("エラー: " + err.message);
+        document.getElementById("resultBox").innerHTML = "エラー: " + err;
     });
 }
 
-function openLogDialog() {
-    // 簡易プロンプトで chosen_strategy と note を取得してログ保存
-    const chosen = prompt("実際に選んだ戦略ラベルを入力してください（例: spread_hold, short_close, long_only, no_trade）", "");
-    if (chosen === null) return;
-    const note = prompt("任意メモ（理由など）", "");
+function logState(){
     const data = getInputData();
-    const payload = Object.assign({}, data, { chosen_strategy: chosen, note: note });
-    fetch("/log-market-state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+    const chosen = prompt("選択した戦略を入力してください（例：spread_hold）", "");
+    const note = prompt("任意メモ（理由など）", "");
+
+    const payload = Object.assign({}, data, {
+        chosen_strategy: chosen || "",
+        note: note || ""
+    });
+
+    fetch("/api/log_market_state", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
     })
-    .then(async res => {
-        if (!res.ok) {
-            const txt = await res.text();
-            throw new Error(txt || "HTTP error " + res.status);
-        }
-        return res.json();
-    })
-    .then(r => {
-        renderResult("ログ保存完了\\nlog_id: " + r.log_id + "\\n保存時刻: " + r.saved_at);
+    .then(r => r.json())
+    .then(res => {
+        document.getElementById("logBox").innerHTML = `
+<b>【ログ保存完了】</b><br>
+log_id: ${res.log_id}<br>
+保存時刻: ${res.saved_at}
+        `;
     })
     .catch(err => {
-        renderResult("ログ保存エラー: " + err.message);
+        document.getElementById("logBox").innerHTML = "ログ保存エラー: " + err;
     });
 }
+
 </script>
+
 </body>
 </html>
 """
 
-# =========================
+# ============================================================
 # 4) ルート（HTML返却）
-# =========================
+# ============================================================
 
 @app.get("/", response_class=HTMLResponse)
-def ui(request: Request):
-    """
-    ルートは HTML を直接返す（テンプレートファイルを生成しないため Azure 安全）。
-    構成順は API → HTML → JS（ユーザの慣れに合わせた順序）。
-    """
-    return HTMLResponse(content=INDEX_HTML, status_code=200)
+def index():
+    return HTMLResponse(INDEX_HTML)
