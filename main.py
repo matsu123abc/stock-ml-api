@@ -1,15 +1,16 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import datetime
 import uuid
 import yfinance as yf
 import numpy as np
+import openai
 
-app = FastAPI(title="stock-ml-api (single-file, Azure-safe)")
+app = FastAPI(title="stock-ml-api (GPT+ML hybrid)")
 
 # ============================================================
-# 1) API（predict_strategy / log_market_state / price / hv）
+# 1) データモデル
 # ============================================================
 
 class MarketState(BaseModel):
@@ -21,26 +22,10 @@ class MarketState(BaseModel):
     days_to_expiry: int
     hv_20d: float
 
-class PredictStrategyResponse(BaseModel):
-    strategy: str
-    confidence: float
-    timestamp: datetime.datetime
-    request_id: str
+# ============================================================
+# 2) ML推論ロジック
+# ============================================================
 
-class LogMarketStateRequest(MarketState):
-    chosen_strategy: str | None = None
-    note: str | None = None
-
-class LogMarketStateResponse(BaseModel):
-    log_id: str
-    saved_at: datetime.datetime
-
-# メモリログ（デモ用）
-MARKET_LOGS = []
-
-# -----------------------------
-# ダミーMLロジック
-# -----------------------------
 def ml_predict(m: MarketState):
     if m.atm_iv > 0.3 and m.days_to_expiry <= 7:
         return "short_close", 0.82
@@ -50,33 +35,78 @@ def ml_predict(m: MarketState):
         return "long_only", 0.71
     return "no_trade", 0.63
 
-# -----------------------------
-# API: 戦略推論
-# -----------------------------
-@app.post("/api/predict_strategy", response_model=PredictStrategyResponse)
+# ============================================================
+# 3) GPT推論ロジック
+# ============================================================
+
+@app.post("/api/predict_strategy_gpt")
+def api_predict_strategy_gpt(m: MarketState):
+
+    prompt = f"""
+あなたはオプション戦略の専門家です。
+以下の市場状態から最適な戦略を1つ選び、理由を説明してください。
+
+株価: {m.stock_price}
+ATM IV: {m.atm_iv}
+OTM IV: {m.otm_iv}
+ガンマ: {m.gamma}
+デルタ: {m.delta}
+残存日数: {m.days_to_expiry}
+HV: {m.hv_20d}
+
+出力形式:
+strategy: 戦略名
+expert_reason: 専門家としての理由
+beginner_explanation: 初心者向けの解説
+beginner_caution: 注意点
+next_step: 次の一手
+"""
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response["choices"][0]["message"]["content"]
+        return {"gpt_result": text}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# ============================================================
+# 4) GPT→ML 二本立て推論 API
+# ============================================================
+
+@app.post("/api/predict_strategy")
 def api_predict_strategy(m: MarketState):
+
+    # 1) GPT推論（優先）
+    gpt = api_predict_strategy_gpt(m)
+
+    if "gpt_result" in gpt:
+        if "strategy:" in gpt["gpt_result"]:
+            return {
+                "source": "GPT",
+                "result": gpt["gpt_result"],
+                "timestamp": datetime.datetime.utcnow(),
+                "request_id": str(uuid.uuid4())
+            }
+
+    # 2) GPTが曖昧なら ML推論
     strategy, confidence = ml_predict(m)
-    return PredictStrategyResponse(
-        strategy=strategy,
-        confidence=confidence,
-        timestamp=datetime.datetime.utcnow(),
-        request_id=str(uuid.uuid4())
-    )
 
-# -----------------------------
-# API: ログ保存
-# -----------------------------
-@app.post("/api/log_market_state", response_model=LogMarketStateResponse)
-def api_log_market_state(req: LogMarketStateRequest):
-    MARKET_LOGS.append(req)
-    return LogMarketStateResponse(
-        log_id=str(uuid.uuid4()),
-        saved_at=datetime.datetime.utcnow()
-    )
+    return {
+        "source": "ML",
+        "strategy": strategy,
+        "confidence": confidence,
+        "timestamp": datetime.datetime.utcnow(),
+        "request_id": str(uuid.uuid4())
+    }
 
-# -----------------------------
-# API: 株価自動取得
-# -----------------------------
+# ============================================================
+# 5) 株価自動取得 API
+# ============================================================
+
 @app.get("/api/price")
 def api_price(ticker: str = "^N225"):
     try:
@@ -88,9 +118,10 @@ def api_price(ticker: str = "^N225"):
     except Exception as e:
         return {"error": str(e)}
 
-# -----------------------------
-# API: HV自動取得
-# -----------------------------
+# ============================================================
+# 6) HV自動取得 API
+# ============================================================
+
 @app.get("/api/hv")
 def api_hv(ticker: str = "^N225", days: int = 20):
     try:
@@ -102,11 +133,12 @@ def api_hv(ticker: str = "^N225", days: int = 20):
         log_returns = np.log(close[1:] / close[:-1])
         hv = float(np.std(log_returns) * np.sqrt(252))
         return {"hv": hv}
+
     except Exception as e:
         return {"error": str(e)}
 
 # ============================================================
-# 2) HTML（スマホ最適化 UI）
+# 7) HTML（スマホ最適化 UI）
 # ============================================================
 
 INDEX_HTML = """
@@ -132,10 +164,6 @@ INDEX_HTML = """
     padding:16px;
     font-size:22px;
   }
-  h2,h3{
-    font-size:28px;
-    margin-bottom:12px;
-  }
   input{
     width:100%;
     font-size:24px;
@@ -143,7 +171,6 @@ INDEX_HTML = """
     margin:10px 0;
     border-radius:10px;
     border:1px solid #ccc;
-    background:#fff;
   }
   button{
     width:100%;
@@ -173,6 +200,7 @@ INDEX_HTML = """
 
 株価 S:<br>
 <input id="stock_price" type="number" placeholder="例: 39000">
+<button onclick="loadPrice()">株価を自動取得する</button>
 
 ATM IV (%):<br>
 <input id="atm_iv" type="number" placeholder="例: 20">
@@ -191,8 +219,6 @@ OTM IV (%):<br>
 
 HV (%):<br>
 <input id="hv_20d" type="number" placeholder="例: 18">
-
-<input id="hv_20d" type="number">
 <button onclick="loadHV()">HVを自動取得する</button>
 <div id="hvBox"></div>
 
@@ -207,13 +233,6 @@ HV (%):<br>
 <div id="logBox"></div>
 
 <script>
-"""
-
-# ============================================================
-# 3) JS（HTML内に埋め込み）
-# ============================================================
-
-INDEX_HTML += """
 async function loadPrice(){
     const data = await fetch("/api/price").then(r => r.json());
     if(data.price){
@@ -256,13 +275,8 @@ function predict(){
     .then(result => {
         document.getElementById("resultBox").innerHTML = `
 <b>【推論結果】</b><br>
-戦略: ${result.strategy}<br>
-信頼度: ${result.confidence}<br>
-時刻: ${result.timestamp}<br>
-ID: ${result.request_id}<br><br>
-
-<b>【入力データ】</b><br>
-${JSON.stringify(data, null, 2)}
+ソース: ${result.source}<br>
+${JSON.stringify(result, null, 2)}
         `;
     });
 }
@@ -302,7 +316,7 @@ window.onload = async () => {
 """
 
 # ============================================================
-# 4) ルート（HTML返却）
+# 8) ルート（HTML返却）
 # ============================================================
 
 @app.get("/", response_class=HTMLResponse)
