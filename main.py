@@ -297,11 +297,43 @@ function predict(){
     })
     .then(r => r.json())
     .then(result => {
-        document.getElementById("resultBox").innerHTML = `
-<b>【推論結果】</b><br>
-ソース: ${result.source}<br>
-${JSON.stringify(result, null, 2)}
-        `;
+
+        if(result.source === "GPT"){
+            const r = result.result;
+
+            document.getElementById("resultBox").innerHTML = `
+<b>【GPT推論結果】</b><br><br>
+
+<b>● 戦略</b><br>
+${r.strategy}<br><br>
+
+<b>● 専門家の判断理由</b><br>
+${r.expert_reason}<br><br>
+
+<b>● 初心者向け解説</b><br>
+${r.beginner_explanation}<br><br>
+
+<b>● 注意ポイント</b><br>
+${r.beginner_caution}<br><br>
+
+<b>● 次の一手</b><br>
+${r.next_step}<br><br>
+
+<b>● 推論時刻</b><br>
+${result.timestamp}<br><br>
+
+<b>● リクエストID</b><br>
+${result.request_id}
+            `;
+        } else {
+            document.getElementById("resultBox").innerHTML = `
+<b>【ML推論結果】</b><br><br>
+戦略: ${result.strategy}<br>
+信頼度: ${result.confidence}<br>
+時刻: ${result.timestamp}<br>
+ID: ${result.request_id}
+            `;
+        }
     });
 }
 
