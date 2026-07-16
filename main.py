@@ -3,11 +3,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import datetime
 import uuid
+import yfinance as yf
+import numpy as np
 
 app = FastAPI(title="stock-ml-api (single-file, Azure-safe)")
 
 # ============================================================
-# 1) API（predict_strategy / log_market_state）
+# 1) API（predict_strategy / log_market_state / price / hv）
 # ============================================================
 
 class MarketState(BaseModel):
@@ -37,22 +39,15 @@ class LogMarketStateResponse(BaseModel):
 MARKET_LOGS = []
 
 # -----------------------------
-# ダミーMLロジック（後で差し替え可能）
+# ダミーMLロジック
 # -----------------------------
 def ml_predict(m: MarketState):
-    """
-    stock-ml-api の戦略推論ロジック
-    （本番ではクラスタリングやモデル推論に差し替え）
-    """
     if m.atm_iv > 0.3 and m.days_to_expiry <= 7:
         return "short_close", 0.82
-
     if m.atm_iv < 0.15 and m.days_to_expiry >= 20:
         return "spread_hold", 0.76
-
     if m.hv_20d > 0.25 and m.otm_iv > 0.3:
         return "long_only", 0.71
-
     return "no_trade", 0.63
 
 # -----------------------------
@@ -78,6 +73,37 @@ def api_log_market_state(req: LogMarketStateRequest):
         log_id=str(uuid.uuid4()),
         saved_at=datetime.datetime.utcnow()
     )
+
+# -----------------------------
+# API: 株価自動取得
+# -----------------------------
+@app.get("/api/price")
+def api_price(ticker: str = "^N225"):
+    try:
+        info = yf.Ticker(ticker).info
+        return {
+            "price": info.get("regularMarketPrice"),
+            "previous_close": info.get("regularMarketPreviousClose")
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# -----------------------------
+# API: HV自動取得
+# -----------------------------
+@app.get("/api/hv")
+def api_hv(ticker: str = "^N225", days: int = 20):
+    try:
+        hist = yf.Ticker(ticker).history(period=f"{days+1}d")
+        if len(hist) < days + 1:
+            return {"hv": None}
+
+        close = hist["Close"].values
+        log_returns = np.log(close[1:] / close[:-1])
+        hv = float(np.std(log_returns) * np.sqrt(252))
+        return {"hv": hv}
+    except Exception as e:
+        return {"error": str(e)}
 
 # ============================================================
 # 2) HTML（スマホ最適化 UI）
@@ -129,7 +155,7 @@ INDEX_HTML = """
     color:#fff;
     border:none;
   }
-  #resultBox, #logBox{
+  #resultBox, #logBox, #hvBox{
     background:var(--panel);
     padding:16px;
     border-radius:10px;
@@ -146,25 +172,29 @@ INDEX_HTML = """
 <h3>市場状態入力</h3>
 
 株価 S:<br>
-<input id="stock_price" type="number">
+<input id="stock_price" type="number" placeholder="例: 39000">
 
 ATM IV (%):<br>
-<input id="atm_iv" type="number">
+<input id="atm_iv" type="number" placeholder="例: 20">
 
 OTM IV (%):<br>
-<input id="otm_iv" type="number">
+<input id="otm_iv" type="number" placeholder="例: 25">
 
 ガンマ:<br>
-<input id="gamma" type="number" step="0.0001">
+<input id="gamma" type="number" step="0.0001" placeholder="例: 0.0012">
 
 デルタ:<br>
-<input id="delta" type="number" step="0.01">
+<input id="delta" type="number" step="0.01" placeholder="例: 0.45">
 
 残存日数:<br>
-<input id="days_to_expiry" type="number">
+<input id="days_to_expiry" type="number" placeholder="例: 7">
 
 HV (%):<br>
+<input id="hv_20d" type="number" placeholder="例: 18">
+
 <input id="hv_20d" type="number">
+<button onclick="loadHV()">HVを自動取得する</button>
+<div id="hvBox"></div>
 
 <button onclick="predict()">推論する</button>
 
@@ -184,6 +214,24 @@ HV (%):<br>
 # ============================================================
 
 INDEX_HTML += """
+async function loadPrice(){
+    const data = await fetch("/api/price").then(r => r.json());
+    if(data.price){
+        document.getElementById("stock_price").value = data.price;
+    }
+}
+
+async function loadHV(){
+    const data = await fetch("/api/hv").then(r => r.json());
+    if(data.hv){
+        document.getElementById("hv_20d").value = (data.hv * 100).toFixed(2);
+        document.getElementById("hvBox").innerHTML = `
+<b>【HV自動取得】</b><br>
+HV(20日): ${(data.hv * 100).toFixed(2)} %
+        `;
+    }
+}
+
 function getInputData(){
     return {
         stock_price: parseFloat(document.getElementById("stock_price").value) || 0,
@@ -216,9 +264,6 @@ ID: ${result.request_id}<br><br>
 <b>【入力データ】</b><br>
 ${JSON.stringify(data, null, 2)}
         `;
-    })
-    .catch(err => {
-        document.getElementById("resultBox").innerHTML = "エラー: " + err;
     });
 }
 
@@ -244,12 +289,12 @@ function logState(){
 log_id: ${res.log_id}<br>
 保存時刻: ${res.saved_at}
         `;
-    })
-    .catch(err => {
-        document.getElementById("logBox").innerHTML = "ログ保存エラー: " + err;
     });
 }
 
+window.onload = async () => {
+    await loadPrice();
+};
 </script>
 
 </body>
