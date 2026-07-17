@@ -163,6 +163,66 @@ def api_hv(ticker: str = "^N225", days: int = 20):
         return {"error": str(e)}
 
 # ============================================================
+# 7) GPT 市場予想 API
+# ============================================================
+@app.get("/api/market_view_auto")
+def api_market_view_auto(ticker: str = "^N225"):
+    try:
+        hist = yf.Ticker(ticker).history(period="30d")
+        if len(hist) < 10:
+            return {"market_view_auto": "データ不足", "reason": ""}
+
+        closes = hist["Close"].values
+        hv = float(np.std(np.log(closes[1:] / closes[:-1])) * np.sqrt(252))
+
+        client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+        )
+
+        prompt = f"""
+あなたは市場アナリストです。
+以下の市場データから、日経平均の短期市場予想を1つ生成してください。
+
+【市場データ】
+直近10日終値: {list(closes[-10:])}
+HV: {hv}
+
+【出力形式】
+次の JSON のみを返す：
+
+{{
+  "market_view_auto": "",
+  "reason": ""
+}}
+"""
+
+        res = client.chat.completions.create(
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+
+        raw = res.choices[0].message.content.strip()
+
+        try:
+            json_start = raw.find("{")
+            json_end = raw.rfind("}") + 1
+            json_text = raw[json_start:json_end]
+            json_text = json_text.replace("```json", "").replace("```", "").strip()
+            return json.loads(json_text)
+        except:
+            return {
+                "market_view_auto": "GPTがJSONを返しませんでした",
+                "reason": raw
+            }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================
 # 7) HTML（スマホ最適化 UI）
 # ============================================================
 
