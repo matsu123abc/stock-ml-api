@@ -189,7 +189,7 @@ INDEX_HTML = """
     padding:16px;
     font-size:22px;
   }
-  input{
+  input, select{
     width:100%;
     font-size:24px;
     padding:16px;
@@ -247,8 +247,15 @@ HV (%):<br>
 <button onclick="loadHV()">HVを自動取得する</button>
 <div id="hvBox"></div>
 
-市場予想（任意）:<br>
-<input id="market_view" type="text" placeholder="例: 来週は上昇予想、SQ前で荒れやすい">
+市場予想（選択式）:<br>
+<select id="market_view">
+  <option value="">選択してください</option>
+  <option value="上昇予想">上昇予想</option>
+  <option value="下落予想">下落予想</option>
+  <option value="横ばい予想">横ばい予想</option>
+  <option value="荒れやすい（ボラティリティ上昇）">荒れやすい（ボラティリティ上昇）</option>
+  <option value="イベント前で不安定（SQ・FOMCなど）">イベント前で不安定（SQ・FOMCなど）</option>
+</select>
 
 <button onclick="predict()">推論する</button>
 
@@ -261,7 +268,6 @@ HV (%):<br>
 <div id="logBox"></div>
 
 <script>
-
 async function loadPrice(){
     const data = await fetch("/api/price").then(r => r.json());
     if(data.price){
@@ -297,7 +303,7 @@ function getInputData(){
         delta: parseFloat(document.getElementById("delta").value) || 0,
         days_to_expiry: parseInt(document.getElementById("days_to_expiry").value) || 0,
         hv_20d: (parseFloat(document.getElementById("hv_20d").value) || 0) / 100,
-        market_view: document.getElementById("market_view").value || ""   // ★ 市場予想を追加
+        market_view: document.getElementById("market_view").value || ""
     };
 }
 
@@ -316,6 +322,9 @@ function predict(){
             const r = result.result;
 
             document.getElementById("resultBox").innerHTML = `
+<b>【市場予想】</b><br>
+${data.market_view || "（なし）"}<br><br>
+
 <b>【GPT推論結果】</b><br><br>
 
 strategy: ${r.strategy}<br><br>
@@ -371,6 +380,7 @@ window.onload = async () => {
 
 </body>
 </html>
+
 """
 
 # ============================================================
