@@ -167,6 +167,7 @@ def api_hv(ticker: str = "^N225", days: int = 20):
 # ============================================================
 
 INDEX_HTML = """
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -247,6 +248,14 @@ HV (%):<br>
 <button onclick="loadHV()">HVを自動取得する</button>
 <div id="hvBox"></div>
 
+<hr>
+
+<!-- GPT市場予想（参考） -->
+<button onclick="loadAutoMarketView()">GPT市場予想（参考）を取得する</button>
+<div id="autoMarketViewBox"></div>
+
+<hr>
+
 市場予想（自分の判断・選択式）:<br>
 <select id="market_view">
   <option value="">選択してください</option>
@@ -294,6 +303,23 @@ ${text}
     `;
 }
 
+async function loadAutoMarketView(){
+    const data = await fetch("/api/market_view_auto").then(r => r.json());
+
+    if(data.market_view_auto){
+        document.getElementById("autoMarketViewBox").innerHTML = `
+<b>【GPT市場予想（参考）】</b><br>
+${data.market_view_auto}<br><br>
+理由: ${data.reason}
+        `;
+    } else {
+        document.getElementById("autoMarketViewBox").innerHTML = `
+<b>【GPT市場予想（参考）】</b><br>
+取得できませんでした。
+        `;
+    }
+}
+
 function getInputData(){
     return {
         stock_price: parseFloat(document.getElementById("stock_price").value) || 0,
@@ -322,6 +348,9 @@ function predict(){
             const r = result.result;
 
             document.getElementById("resultBox").innerHTML = `
+<b>【GPT市場予想（参考）】</b><br>
+${document.getElementById("autoMarketViewBox").innerText || "（未取得）"}<br><br>
+
 <b>【市場予想（自分の判断）】</b><br>
 ${data.market_view || "（なし）"}<br><br>
 
@@ -380,6 +409,7 @@ window.onload = async () => {
 
 </body>
 </html>
+
 """
 
 # ============================================================
