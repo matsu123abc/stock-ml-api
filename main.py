@@ -23,6 +23,7 @@ class MarketState(BaseModel):
     delta: float
     days_to_expiry: int
     hv_20d: float
+    market_view: str | None = ""   # ★ 市場予想を追加
 
 # ============================================================
 # 2) ML推論ロジック
@@ -51,7 +52,7 @@ def gpt_predict(m: MarketState):
 
     prompt = f"""
 あなたはプロのオプション戦略アナリストです。
-以下の市場状態から最適な戦略を1つ選び、理由を説明してください。
+以下の市場状態と市場予想を総合評価し、最適な戦略を1つ選び、理由を説明してください。
 
 【市場データ】
 株価: {m.stock_price}
@@ -61,6 +62,9 @@ OTM IV: {m.otm_iv}
 デルタ: {m.delta}
 残存日数: {m.days_to_expiry}
 HV: {m.hv_20d}
+
+【市場予想】
+{m.market_view}
 
 【出力形式】
 次の JSON のみを返す：
@@ -83,7 +87,6 @@ HV: {m.hv_20d}
 
         raw = res.choices[0].message.content.strip()
 
-        # JSON抽出
         json_start = raw.find("{")
         json_end = raw.rfind("}") + 1
 
@@ -105,7 +108,6 @@ HV: {m.hv_20d}
 @app.post("/api/predict_strategy")
 def api_predict_strategy(m: MarketState):
 
-    # 1) GPT推論（優先）
     gpt = gpt_predict(m)
 
     if gpt and gpt.get("strategy"):
@@ -116,7 +118,6 @@ def api_predict_strategy(m: MarketState):
             "request_id": str(uuid.uuid4())
         }
 
-    # 2) GPTが曖昧なら ML推論
     strategy, confidence = ml_predict(m)
 
     return {
@@ -246,6 +247,9 @@ HV (%):<br>
 <button onclick="loadHV()">HVを自動取得する</button>
 <div id="hvBox"></div>
 
+市場予想（任意）:<br>
+<input id="market_view" type="text" placeholder="例: 来週は上昇予想、SQ前で荒れやすい">
+
 <button onclick="predict()">推論する</button>
 
 <div id="resultBox"></div>
@@ -257,6 +261,7 @@ HV (%):<br>
 <div id="logBox"></div>
 
 <script>
+
 async function loadPrice(){
     const data = await fetch("/api/price").then(r => r.json());
     if(data.price){
@@ -291,7 +296,8 @@ function getInputData(){
         gamma: parseFloat(document.getElementById("gamma").value) || 0,
         delta: parseFloat(document.getElementById("delta").value) || 0,
         days_to_expiry: parseInt(document.getElementById("days_to_expiry").value) || 0,
-        hv_20d: (parseFloat(document.getElementById("hv_20d").value) || 0) / 100
+        hv_20d: (parseFloat(document.getElementById("hv_20d").value) || 0) / 100,
+        market_view: document.getElementById("market_view").value || ""   // ★ 市場予想を追加
     };
 }
 
@@ -312,34 +318,22 @@ function predict(){
             document.getElementById("resultBox").innerHTML = `
 <b>【GPT推論結果】</b><br><br>
 
-<b>● 戦略</b><br>
-${r.strategy}<br><br>
+strategy: ${r.strategy}<br><br>
+expert_reason: ${r.expert_reason}<br><br>
+beginner_explanation: ${r.beginner_explanation}<br><br>
+beginner_caution: ${r.beginner_caution}<br><br>
+next_step: ${r.next_step}<br><br>
 
-<b>● 専門家の判断理由</b><br>
-${r.expert_reason}<br><br>
-
-<b>● 初心者向け解説</b><br>
-${r.beginner_explanation}<br><br>
-
-<b>● 注意ポイント</b><br>
-${r.beginner_caution}<br><br>
-
-<b>● 次の一手</b><br>
-${r.next_step}<br><br>
-
-<b>● 推論時刻</b><br>
-${result.timestamp}<br><br>
-
-<b>● リクエストID</b><br>
-${result.request_id}
+timestamp: ${result.timestamp}<br>
+request_id: ${result.request_id}
             `;
         } else {
             document.getElementById("resultBox").innerHTML = `
 <b>【ML推論結果】</b><br><br>
-戦略: ${result.strategy}<br>
-信頼度: ${result.confidence}<br>
-時刻: ${result.timestamp}<br>
-ID: ${result.request_id}
+strategy: ${result.strategy}<br>
+confidence: ${result.confidence}<br>
+timestamp: ${result.timestamp}<br>
+request_id: ${result.request_id}
             `;
         }
     });
