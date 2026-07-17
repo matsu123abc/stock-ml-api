@@ -408,9 +408,6 @@ function predict(){
             const r = result.result;
 
             document.getElementById("resultBox").innerHTML = `
-<b>【GPT市場予想（参考）】</b><br>
-${document.getElementById("autoMarketViewBox").innerText || "（未取得）"}<br><br>
-
 <b>【市場予想（自分の判断）】</b><br>
 ${data.market_view || "（なし）"}<br><br>
 
