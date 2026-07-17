@@ -23,7 +23,7 @@ class MarketState(BaseModel):
     delta: float
     days_to_expiry: int
     hv_20d: float
-    market_view: str | None = ""   # ★ 市場予想を追加
+    market_view: str | None = ""   # 自分の市場予想
 
 # ============================================================
 # 2) ML推論ロジック
@@ -39,7 +39,7 @@ def ml_predict(m: MarketState):
     return "no_trade", 0.63
 
 # ============================================================
-# 3) GPT推論（AzureOpenAI 実績コード）
+# 3) GPT推論（AzureOpenAI）
 # ============================================================
 
 def gpt_predict(m: MarketState):
@@ -63,7 +63,7 @@ OTM IV: {m.otm_iv}
 残存日数: {m.days_to_expiry}
 HV: {m.hv_20d}
 
-【市場予想】
+【市場予想（自分の判断）】
 {m.market_view}
 
 【出力形式】
@@ -207,7 +207,7 @@ INDEX_HTML = """
     color:#fff;
     border:none;
   }
-  #resultBox, #logBox, #hvBox{
+  #resultBox, #logBox, #hvBox, #autoMarketViewBox{
     background:var(--panel);
     padding:16px;
     border-radius:10px;
@@ -247,7 +247,7 @@ HV (%):<br>
 <button onclick="loadHV()">HVを自動取得する</button>
 <div id="hvBox"></div>
 
-市場予想（選択式）:<br>
+市場予想（自分の判断・選択式）:<br>
 <select id="market_view">
   <option value="">選択してください</option>
   <option value="上昇予想">上昇予想</option>
@@ -322,7 +322,7 @@ function predict(){
             const r = result.result;
 
             document.getElementById("resultBox").innerHTML = `
-<b>【市場予想】</b><br>
+<b>【市場予想（自分の判断）】</b><br>
 ${data.market_view || "（なし）"}<br><br>
 
 <b>【GPT推論結果】</b><br><br>
@@ -380,7 +380,6 @@ window.onload = async () => {
 
 </body>
 </html>
-
 """
 
 # ============================================================
