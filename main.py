@@ -288,6 +288,69 @@ def api_ml_collect_5y():
 
     except Exception as e:
         return {"error": str(e)}
+    
+@app.get("/api/ml_collect_5y")
+def api_ml_collect_5y():
+    try:
+        df_n225 = yf.Ticker("^N225").history(period="5y")
+        df_n225["Month"] = df_n225.index.to_period("M")
+
+        df_spx = yf.Ticker("^GSPC").history(period="5y")
+        df_spx["Month"] = df_spx.index.to_period("M")
+
+        results = []
+
+        for month, df_month in df_n225.groupby("Month"):
+            pattern = classify_month(df_month)
+            hv_n225 = calc_hv(df_month)
+
+            df_spx_month = df_spx[df_spx["Month"] == month]
+            hv_spx = calc_hv(df_spx_month) if len(df_spx_month) > 0 else None
+
+            results.append({
+                "month": str(month),
+                "pattern_prev": pattern,
+                "hv_n225_prev": hv_n225,
+                "hv_spx_prev": hv_spx
+            })
+
+        return results
+
+    except Exception as e:
+        return {"error": str(e)}
+
+def classify_month(df_month):
+    open_price = df_month["Open"].iloc[0]
+    close_price = df_month["Close"].iloc[-1]
+    high_price = df_month["High"].max()
+    low_price = df_month["Low"].min()
+
+    mid_index = len(df_month) // 2
+    mid_price = df_month["Close"].iloc[mid_index]
+
+    change_total = (close_price - open_price) / open_price
+    change_open_mid = (mid_price - open_price) / open_price
+    change_mid_close = (close_price - mid_price) / mid_price
+    range_month = (high_price - low_price) / open_price
+
+    if change_total > 0.03:
+        return "UP"
+    if change_total < -0.03:
+        return "DOWN"
+    if range_month < 0.02:
+        return "FLAT"
+    if change_open_mid > 0.02 and change_mid_close < -0.02:
+        return "UPDOWN"
+    if change_open_mid < -0.02 and change_mid_close > 0.02:
+        return "DOWNUP"
+
+    return "FLAT"
+
+
+def calc_hv(df):
+    returns = np.log(df["Close"] / df["Close"].shift(1)).dropna()
+    return float(returns.std() * np.sqrt(252))
+
 
 # ============================================================
 # 9) HTML（スマホ最適化 UI）
