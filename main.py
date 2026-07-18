@@ -165,6 +165,7 @@ def api_hv(ticker: str = "^N225", days: int = 20):
 # ============================================================
 # 7) GPT 市場予想 API
 # ============================================================
+
 @app.get("/api/market_view_auto")
 def api_market_view_auto(ticker: str = "^N225"):
     try:
@@ -221,9 +222,75 @@ HV: {hv}
     except Exception as e:
         return {"error": str(e)}
 
+# ============================================================
+# 8) MLデータ収集 API（5年間の月次データ）
+# ============================================================
+
+def classify_month(df_month):
+    open_price = df_month["Open"].iloc[0]
+    close_price = df_month["Close"].iloc[-1]
+    high_price = df_month["High"].max()
+    low_price = df_month["Low"].min()
+
+    mid_index = len(df_month) // 2
+    mid_price = df_month["Close"].iloc[mid_index]
+
+    change_total = (close_price - open_price) / open_price
+    change_open_mid = (mid_price - open_price) / open_price
+    change_mid_close = (close_price - mid_price) / mid_price
+    range_month = (high_price - low_price) / open_price
+
+    if change_total > 0.03:
+        return "UP"
+    if change_total < -0.03:
+        return "DOWN"
+    if range_month < 0.02:
+        return "FLAT"
+    if change_open_mid > 0.02 and change_mid_close < -0.02:
+        return "UPDOWN"
+    if change_open_mid < -0.02 and change_mid_close > 0.02:
+        return "DOWNUP"
+
+    return "FLAT"
+
+
+def calc_hv(df):
+    returns = np.log(df["Close"] / df["Close"].shift(1)).dropna()
+    return float(returns.std() * np.sqrt(252))
+
+
+@app.get("/api/ml_collect_5y")
+def api_ml_collect_5y():
+    try:
+        df_n225 = yf.Ticker("^N225").history(period="5y")
+        df_n225["Month"] = df_n225.index.to_period("M")
+
+        df_spx = yf.Ticker("^GSPC").history(period="5y")
+        df_spx["Month"] = df_spx.index.to_period("M")
+
+        results = []
+
+        for month, df_month in df_n225.groupby("Month"):
+            pattern = classify_month(df_month)
+            hv_n225 = calc_hv(df_month)
+
+            df_spx_month = df_spx[df_spx["Month"] == month]
+            hv_spx = calc_hv(df_spx_month) if len(df_spx_month) > 0 else None
+
+            results.append({
+                "month": str(month),
+                "pattern_prev": pattern,
+                "hv_n225_prev": hv_n225,
+                "hv_spx_prev": hv_spx
+            })
+
+        return results
+
+    except Exception as e:
+        return {"error": str(e)}
 
 # ============================================================
-# 7) HTML（スマホ最適化 UI）
+# 9) HTML（スマホ最適化 UI）
 # ============================================================
 
 INDEX_HTML = """
@@ -268,7 +335,7 @@ INDEX_HTML = """
     color:#fff;
     border:none;
   }
-  #resultBox, #logBox, #hvBox, #autoMarketViewBox{
+  #resultBox, #logBox, #hvBox, #autoMarketViewBox, #mlDataBox{
     background:var(--panel);
     padding:16px;
     border-radius:10px;
@@ -335,6 +402,14 @@ HV (%):<br>
 <h3>ログ保存</h3>
 <button onclick="logState()">ログ保存する</button>
 <div id="logBox"></div>
+
+<hr>
+
+<h3>MLデータ収集（5年間）</h3>
+<button onclick="collectML()">MLデータ収集する</button>
+<div id="mlDataBox"></div>
+
+<hr>
 
 <script>
 async function loadPrice(){
@@ -459,6 +534,23 @@ log_id: ${res.log_id}<br>
     });
 }
 
+async function collectML(){
+    const data = await fetch("/api/ml_collect_5y").then(r => r.json());
+
+    let html = "<b>【MLデータ収集結果（5年間）】</b><br><br>";
+
+    data.forEach(row => {
+        html += `
+month: ${row.month}<br>
+pattern_prev: ${row.pattern_prev}<br>
+hv_n225_prev: ${row.hv_n225_prev}<br>
+hv_spx_prev: ${row.hv_spx_prev}<br><br>
+        `;
+    });
+
+    document.getElementById("mlDataBox").innerHTML = html;
+}
+
 window.onload = async () => {
     await loadPrice();
 };
@@ -468,11 +560,3 @@ window.onload = async () => {
 </html>
 
 """
-
-# ============================================================
-# 8) ルート（HTML返却）
-# ============================================================
-
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return HTMLResponse(INDEX_HTML)
