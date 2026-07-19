@@ -11,6 +11,8 @@ import logging
 import pandas as pd
 from openai import AzureOpenAI
 from typing import Optional
+from scipy.stats import norm
+
 
 # --- ログ設定 ---
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +88,40 @@ def azure_config_ok():
     if not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_DEPLOYMENT") or not os.getenv("AZURE_OPENAI_ENDPOINT"):
         return False
     return True
+
+
+def bs_call_price(S, K, sigma, T, r=0.001):
+    """
+    Black-Scholes コールオプション理論価格（本物）
+    S: 現物価格
+    K: ストライク
+    sigma: ボラティリティ（HVをIVとして使用）
+    T: 満期（年換算）
+    r: 無リスク金利（日本なら 0.1% 程度）
+    """
+    if sigma <= 0 or T <= 0:
+        return 0.0
+
+    d1 = (np.log(S / K) + (r + sigma**2 / 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    call = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    return call
+
+
+def bs_put_price(S, K, sigma, T, r=0.001):
+    """
+    Black-Scholes プットオプション理論価格（本物）
+    """
+    if sigma <= 0 or T <= 0:
+        return 0.0
+
+    d1 = (np.log(S / K) + (r + sigma**2 / 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    put = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    return put
+
 
 # ============================================================
 # 3) ML推論ロジック
@@ -417,10 +453,10 @@ def calc_hv_mid20(ticker, df_month):
 @app.get("/api/backtest_strategies")
 def api_backtest_strategies():
     """
-    Straddle を除外した改善版バックテスト：
-    - 現実的なプレミアム（簡易 Black-Scholes）
-    - 現実的なストライク幅（±300円）
-    - 方向性戦略と横ばい戦略を比較
+    Black-Scholes を使った改善版バックテスト：
+    - HV を IV として使用
+    - BS でプレミアムを計算
+    - Spread / Iron Condor の比較が正常化
     """
 
     try:
@@ -435,60 +471,11 @@ def api_backtest_strategies():
 
         results = []
 
-        # ③ Black-Scholes（簡易版）
-        def bs_call(S, K, iv, days):
-            T = days / 365
-            sigma = iv
-            if sigma <= 0 or T <= 0:
-                return 0
-            # 簡易版（実務では scipy.stats.norm を使う）
-            return max(0, S - K) * 0.5
-
-        def bs_put(S, K, iv, days):
-            return max(0, K - S) * 0.5
-
-        # ④ 戦略の損益計算（Straddle は除外）
-        def bull_call_spread(S_next, S, iv):
-            width = 300
-            long = S + width
-            short = S + width * 2
-            premium = bs_call(S, long, iv, 30) - bs_call(S, short, iv, 30)
-            intrinsic = max(0, S_next - long) - max(0, S_next - short)
-            return intrinsic - premium
-
-        def bear_put_spread(S_next, S, iv):
-            width = 300
-            long = S - width
-            short = S - width * 2
-            premium = bs_put(S, long, iv, 30) - bs_put(S, short, iv, 30)
-            intrinsic = max(0, long - S_next) - max(0, short - S_next)
-            return intrinsic - premium
-
-        def iron_condor(S_next, S, iv):
-            width = 200
-            call_long = S + width * 2
-            call_short = S + width
-            put_long = S - width * 2
-            put_short = S - width
-
-            premium = (
-                bs_call(S, call_short, iv, 30)
-                - bs_call(S, call_long, iv, 30)
-                + bs_put(S, put_short, iv, 30)
-                - bs_put(S, put_long, iv, 30)
-            )
-
-            intrinsic = (
-                max(0, S_next - call_short) - max(0, S_next - call_long)
-                + max(0, put_short - S_next) - max(0, put_long - S_next)
-            )
-
-            return premium - intrinsic
-
-        # ⑤ 月次バックテスト
+        # ③ 月次バックテスト
         for row in ml_data:
             month = row["month"]
             pattern = row["pattern_prev"]
+            iv = row["hv_n225_prev"]  # ← HV を IV として使う（重要）
 
             df_month = df_price[df_price["Month"] == month]
             if len(df_month) == 0:
@@ -503,13 +490,53 @@ def api_backtest_strategies():
 
             S_next = float(df_next["Close"].iloc[-1])
 
-            iv = 0.20  # 仮のIV（後でAPIから取得可能）
+            T = 30 / 365  # 月次バックテストなので 30日固定
 
-            # ⑥ Straddle を除外した戦略比較
+            # ④ 戦略の損益計算（Straddle は除外）
+            def bull_call_spread():
+                width = 300
+                long = S + width
+                short = S + width * 2
+
+                premium = bs_call_price(S, long, iv, T) - bs_call_price(S, short, iv, T)
+                intrinsic = max(0, S_next - long) - max(0, S_next - short)
+                return intrinsic - premium
+
+            def bear_put_spread():
+                width = 300
+                long = S - width
+                short = S - width * 2
+
+                premium = bs_put_price(S, long, iv, T) - bs_put_price(S, short, iv, T)
+                intrinsic = max(0, long - S_next) - max(0, short - S_next)
+                return intrinsic - premium
+
+            def iron_condor():
+                width = 200
+                call_long = S + width * 2
+                call_short = S + width
+                put_long = S - width * 2
+                put_short = S - width
+
+                premium = (
+                    bs_call_price(S, call_short, iv, T)
+                    - bs_call_price(S, call_long, iv, T)
+                    + bs_put_price(S, put_short, iv, T)
+                    - bs_put_price(S, put_long, iv, T)
+                )
+
+                intrinsic = (
+                    max(0, S_next - call_short) - max(0, S_next - call_long)
+                    + max(0, put_short - S_next) - max(0, put_long - S_next)
+                )
+
+                return premium - intrinsic
+
+            # ⑤ 戦略比較（Straddle は除外）
             strategies = [
-                ("bull_call_spread", bull_call_spread(S_next, S, iv)),
-                ("bear_put_spread", bear_put_spread(S_next, S, iv)),
-                ("iron_condor", iron_condor(S_next, S, iv)),
+                ("bull_call_spread", bull_call_spread()),
+                ("bear_put_spread", bear_put_spread()),
+                ("iron_condor", iron_condor()),
             ]
 
             best = max(strategies, key=lambda x: x[1])
@@ -520,7 +547,8 @@ def api_backtest_strategies():
                 "best_strategy": best[0],
                 "best_pnl": best[1],
                 "S": S,
-                "S_next": S_next
+                "S_next": S_next,
+                "iv_used": iv
             })
 
         return results
