@@ -612,18 +612,22 @@ class MLPredictRequest(BaseModel):
 @app.post("/api/train_lightgbm")
 def train_lightgbm():
     try:
+
         # MLデータ（pattern_prev, hv_n225_prev, hv_spx_prev）
         ml_data = api_ml_collect_5y()
         df_ml = pd.DataFrame(ml_data)
 
-        # バックテスト結果（best_strategy, best_pnl）
+        # MLデータは 61 行 → バックテストに合わせて最後の 1 行を削除
+        df_ml = df_ml.iloc[:-1].reset_index(drop=True)
+
+        # バックテスト結果（60行）
         bt_data = api_backtest_strategies()
         df_bt = pd.DataFrame(bt_data)
 
-        # 月で結合
+        # 月で結合（60行になる）
         df = df_ml.merge(df_bt, on="month")
 
-        # pattern_prev をラベルエンコード
+        # pattern_prev をラベルエンコード（df_ml を使う）
         le = LabelEncoder()
         df["pattern_prev_enc"] = le.fit_transform(df_ml["pattern_prev"])
 
