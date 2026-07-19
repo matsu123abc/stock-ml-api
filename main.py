@@ -564,25 +564,19 @@ import pickle
 
 @app.post("/api/train_lightgbm")
 def train_lightgbm():
-    """
-    ML学習API（修正版）：
-    - MLデータ（HV・pattern）を取得
-    - BSバックテスト結果（PNL）を取得
-    - 学習用データフレームを作成
-    - LightGBMモデルを学習
-    - モデルを保存
-    """
-
     try:
         # ① MLデータ取得
         ml_data = api_ml_collect_5y()
         df_ml = pd.DataFrame(ml_data)
 
-        # ② BSバックテスト結果取得
+        # MLデータは 61 行 → バックテストに合わせて最後の 1 行を削除
+        df_ml = df_ml.iloc[:-1].reset_index(drop=True)
+
+        # ② BSバックテスト結果取得（60行）
         bt_data = api_backtest_strategies()
         df_bt = pd.DataFrame(bt_data)
 
-        # ③ 月で結合
+        # ③ 月で結合（60行になる）
         df = df_ml.merge(df_bt, on="month")
 
         # ④ pattern_prev をラベルエンコード（MLデータ側を使う）
@@ -598,7 +592,6 @@ def train_lightgbm():
             "S_next": df["S_next"],
             "iv_used": df["iv_used"],
 
-            # 目的変数（翌月PNL）
             "pnl_bull_call_next": df["best_pnl"].where(df["best_strategy"]=="bull_call_spread", 0),
             "pnl_bear_put_next": df["best_pnl"].where(df["best_strategy"]=="bear_put_spread", 0),
             "pnl_iron_condor_next": df["best_pnl"].where(df["best_strategy"]=="iron_condor", 0),
