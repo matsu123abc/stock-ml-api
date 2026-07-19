@@ -563,6 +563,7 @@ from lightgbm import LGBMRegressor
 import pickle
 import os
 from azure.storage.blob import BlobServiceClient
+from pydantic import BaseModel
 
 @app.post("/api/train_lightgbm")
 def train_lightgbm():
@@ -635,6 +636,74 @@ def train_lightgbm():
         upload_pkl("pattern_encoder.pkl", le)
 
         return {"status": "学習完了（Blob保存）", "records": len(df_train)}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class PredictRequest(BaseModel):
+    hv_n225_prev: float
+    hv_spx_prev: float
+    pattern_prev: str
+    S: float
+    S_next: float
+    iv_used: float
+
+@app.post("/api/predict_strategy")
+def predict_strategy(req: PredictRequest):
+
+    try:
+        # Blob 接続
+        blob_service = BlobServiceClient.from_connection_string(
+            os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        )
+        container_name = os.getenv("MODEL_CONTAINER", "models")
+        container = blob_service.get_container_client(container_name)
+
+        # Blob から PKL を読み込む関数
+        def load_pkl(name):
+            blob = container.get_blob_client(name)
+            data = blob.download_blob().readall()
+            return pickle.loads(data)
+
+        # モデル読み込み
+        model_bull = load_pkl("model_bull.pkl")
+        model_bear = load_pkl("model_bear.pkl")
+        model_condor = load_pkl("model_condor.pkl")
+        le = load_pkl("pattern_encoder.pkl")
+
+        # pattern_prev をエンコード
+        pattern_enc = le.transform([req.pattern_prev])[0]
+
+        # 特徴量データフレーム
+        X = pd.DataFrame([{
+            "hv_n225_prev": req.hv_n225_prev,
+            "hv_spx_prev": req.hv_spx_prev,
+            "pattern_prev_enc": pattern_enc,
+            "S": req.S,
+            "S_next": req.S_next,
+            "iv_used": req.iv_used,
+        }])
+
+        # 予測
+        bull_pnl = model_bull.predict(X)[0]
+        bear_pnl = model_bear.predict(X)[0]
+        condor_pnl = model_condor.predict(X)[0]
+
+        # 最適戦略
+        strategy_map = {
+            "bull_call_spread": bull_pnl,
+            "bear_put_spread": bear_pnl,
+            "iron_condor": condor_pnl
+        }
+        best_strategy = max(strategy_map, key=strategy_map.get)
+
+        return {
+            "bull_call_spread": bull_pnl,
+            "bear_put_spread": bear_pnl,
+            "iron_condor": condor_pnl,
+            "best_strategy": best_strategy
+        }
 
     except Exception as e:
         return {"error": str(e)}
@@ -785,6 +854,10 @@ HV (%):<br>
 <div id="resultBox"></div>
 
 <hr>
+
+<button onclick="predictStrategy()">来月の戦略を予測する</button>
+
+<div id="predictResultBox"></div>
 
 <h3>ログ保存</h3>
 <button onclick="logState()">ログ保存する</button>
@@ -1002,6 +1075,42 @@ S_next: ${row.S_next}<br><br>
     });
 
     document.getElementById("backtestBox").innerHTML = html;
+}
+
+function predictStrategy() {
+
+    // 入力データを UI から取得（章さんの既存 getInputData を使う場合）
+    const data = getInputData();
+
+    fetch("/api/predict_strategy", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+    })
+    .then(r => r.json())
+    .then(result => {
+
+        if (result.error) {
+            document.getElementById("predictResultBox").innerHTML =
+                "⚠ エラー：" + JSON.stringify(result);
+            return;
+        }
+
+        const bull = result.bull_call_spread.toFixed(2);
+        const bear = result.bear_put_spread.toFixed(2);
+        const condor = result.iron_condor.toFixed(2);
+
+        const best = result.best_strategy;
+
+        document.getElementById("predictResultBox").innerHTML = `
+<b>【LightGBM 推論結果】</b><br><br>
+bull_call_spread：${bull}<br>
+bear_put_spread：${bear}<br>
+iron_condor：${condor}<br><br>
+
+<b>推奨戦略：${best}</b>
+        `;
+    });
 }
 
 window.onload = async () => {
