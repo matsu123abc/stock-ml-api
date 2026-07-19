@@ -1106,12 +1106,13 @@ function getInputData() {
     return {
         hv_n225_prev: parseFloat(document.getElementById("pred_hv_n225_prev").value),
         hv_spx_prev: parseFloat(document.getElementById("pred_hv_spx_prev").value),
-        pattern_prev: document.getElementById("pred_pattern_prev").value,
+        pattern_prev: document.getElementById("pred_pattern_prev").value.trim(),
         S: parseFloat(document.getElementById("pred_S").value),
         S_next: parseFloat(document.getElementById("pred_S_next").value),
         iv_used: parseFloat(document.getElementById("pred_iv_used").value)
     };
 }
+
 
 function predictStrategy() {
 
@@ -1147,6 +1148,7 @@ iron_condor：${condor}<br><br>
         `;
     });
 }
+
 
 window.onload = async () => {
     await loadPrice();
