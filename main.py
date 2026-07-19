@@ -417,11 +417,10 @@ def calc_hv_mid20(ticker, df_month):
 @app.get("/api/backtest_strategies")
 def api_backtest_strategies():
     """
-    改善版バックテスト：
-    - 現実的なプレミアム（IVベース）
-    - 現実的なストライク幅（±200〜300円）
-    - 戦略を増やす
-    - straddle の片寄りを解消
+    Straddle を除外した改善版バックテスト：
+    - 現実的なプレミアム（簡易 Black-Scholes）
+    - 現実的なストライク幅（±300円）
+    - 方向性戦略と横ばい戦略を比較
     """
 
     try:
@@ -442,14 +441,13 @@ def api_backtest_strategies():
             sigma = iv
             if sigma <= 0 or T <= 0:
                 return 0
-            d1 = (np.log(S / K) + (sigma**2 / 2) * T) / (sigma * np.sqrt(T))
-            d2 = d1 - sigma * np.sqrt(T)
-            return S * 0.5 - K * 0.5  # 簡易版（実務では scipy.stats.norm を使う）
+            # 簡易版（実務では scipy.stats.norm を使う）
+            return max(0, S - K) * 0.5
 
         def bs_put(S, K, iv, days):
-            return bs_call(S, K, iv, days)  # 簡易版
+            return max(0, K - S) * 0.5
 
-        # ④ 戦略の損益計算
+        # ④ 戦略の損益計算（Straddle は除外）
         def bull_call_spread(S_next, S, iv):
             width = 300
             long = S + width
@@ -464,20 +462,6 @@ def api_backtest_strategies():
             short = S - width * 2
             premium = bs_put(S, long, iv, 30) - bs_put(S, short, iv, 30)
             intrinsic = max(0, long - S_next) - max(0, short - S_next)
-            return intrinsic - premium
-
-        def straddle(S_next, S, iv):
-            call = bs_call(S, S, iv, 30)
-            put = bs_put(S, S, iv, 30)
-            premium = call + put
-            intrinsic = abs(S_next - S)
-            return intrinsic - premium
-
-        def strangle(S_next, S, iv):
-            call = bs_call(S, S + 200, iv, 30)
-            put = bs_put(S, S - 200, iv, 30)
-            premium = call + put
-            intrinsic = max(0, S_next - (S + 200)) + max(0, (S - 200) - S_next)
             return intrinsic - premium
 
         def iron_condor(S_next, S, iv):
@@ -521,12 +505,10 @@ def api_backtest_strategies():
 
             iv = 0.20  # 仮のIV（後でAPIから取得可能）
 
-            # ⑥ 戦略ごとの損益
+            # ⑥ Straddle を除外した戦略比較
             strategies = [
                 ("bull_call_spread", bull_call_spread(S_next, S, iv)),
                 ("bear_put_spread", bear_put_spread(S_next, S, iv)),
-                ("straddle", straddle(S_next, S, iv)),
-                ("strangle", strangle(S_next, S, iv)),
                 ("iron_condor", iron_condor(S_next, S, iv)),
             ]
 
