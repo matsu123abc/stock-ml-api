@@ -307,25 +307,39 @@ def api_ml_collect_5y():
         df_spx = yf.Ticker("^GSPC").history(period="5y")
         df_spx["Month"] = df_spx.index.to_period("M")
 
-        results = []
+        raw_results = []
 
         for month, df_month in df_n225.groupby("Month"):
 
-            # 月の最終日を取得
-            end_date = df_month.index[-1]
+            # 月の中間日を基準にHVを計算（改善版）
+            hv_n225 = calc_hv_mid20("^N225", df_month)
+            hv_spx = calc_hv_mid20("^GSPC", df_month)
 
-            # 改善版 HV（過去20日）
-            hv_n225 = calc_hv_last20("^N225", end_date)
-            hv_spx = calc_hv_last20("^GSPC", end_date)
-
-            # 月内パターン分類（これは現状のままでOK）
             pattern = classify_month(df_month)
 
-            results.append({
+            raw_results.append({
                 "month": str(month),
                 "pattern_prev": pattern,
                 "hv_n225_prev": hv_n225,
                 "hv_spx_prev": hv_spx
+            })
+
+        # --- 平滑化処理（ロバスト移動平均） ---
+        hv_n225_list = [r["hv_n225_prev"] for r in raw_results]
+        hv_spx_list = [r["hv_spx_prev"] for r in raw_results]
+
+        hv_n225_smooth = smooth_hv(hv_n225_list)
+        hv_spx_smooth = smooth_hv(hv_spx_list)
+
+        # 平滑化結果を反映
+        results = []
+        for i in range(len(raw_results)):
+            r = raw_results[i]
+            results.append({
+                "month": r["month"],
+                "pattern_prev": r["pattern_prev"],
+                "hv_n225_prev": hv_n225_smooth[i],
+                "hv_spx_prev": hv_spx_smooth[i]
             })
 
         return results
@@ -352,6 +366,21 @@ def calc_hv_last20(ticker, end_date):
 
     except Exception as e:
         return None
+
+def smooth_hv(values, window=3):
+    """
+    ロバスト移動平均（中央値ベース）
+    スパイクを抑えつつトレンドを維持する
+    MLに最適な平滑化方法
+    """
+    smoothed = []
+    for i in range(len(values)):
+        start = max(0, i - window)
+        end = min(len(values), i + window + 1)
+        window_vals = values[start:end]
+        median = float(np.median(window_vals))
+        smoothed.append(median)
+    return smoothed
 
 
 # ============================================================
