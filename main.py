@@ -557,6 +557,84 @@ def api_backtest_strategies():
         return {"error": str(e)}
 
 
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from lightgbm import LGBMRegressor
+import pickle
+
+@app.post("/api/train_lightgbm")
+def train_lightgbm():
+    """
+    ML学習API：
+    - MLデータ（HV・pattern）を取得
+    - BSバックテスト結果（PNL）を取得
+    - 学習用データフレームを作成
+    - LightGBMモデルを学習
+    - モデルを保存
+    """
+
+    try:
+        # ① MLデータ取得
+        ml_data = api_ml_collect_5y()
+        df_ml = pd.DataFrame(ml_data)
+
+        # ② BSバックテスト結果取得
+        bt_data = api_backtest_strategies()
+        df_bt = pd.DataFrame(bt_data)
+
+        # ③ 月で結合
+        df = df_ml.merge(df_bt, on="month")
+
+        # ④ pattern_prev をラベルエンコード
+        le = LabelEncoder()
+        df["pattern_prev_enc"] = le.fit_transform(df["pattern_prev"])
+
+        # ⑤ 学習用データフレーム作成
+        df_train = pd.DataFrame({
+            "hv_n225_prev": df["hv_n225_prev"],
+            "hv_spx_prev": df["hv_spx_prev"],
+            "pattern_prev_enc": df["pattern_prev_enc"],
+            "S": df["S"],
+            "S_next": df["S_next"],
+            "iv_used": df["iv_used"],
+
+            # 目的変数（翌月PNL）
+            "pnl_bull_call_next": df["best_pnl"].where(df["best_strategy"]=="bull_call_spread", 0),
+            "pnl_bear_put_next": df["best_pnl"].where(df["best_strategy"]=="bear_put_spread", 0),
+            "pnl_iron_condor_next": df["best_pnl"].where(df["best_strategy"]=="iron_condor", 0),
+        })
+
+        # ⑥ 特徴量と目的変数
+        X = df_train[[
+            "hv_n225_prev",
+            "hv_spx_prev",
+            "pattern_prev_enc",
+            "S",
+            "S_next",
+            "iv_used",
+        ]]
+
+        y_bull = df_train["pnl_bull_call_next"]
+        y_bear = df_train["pnl_bear_put_next"]
+        y_condor = df_train["pnl_iron_condor_next"]
+
+        # ⑦ LightGBMモデル学習
+        model_bull = LGBMRegressor().fit(X, y_bull)
+        model_bear = LGBMRegressor().fit(X, y_bear)
+        model_condor = LGBMRegressor().fit(X, y_condor)
+
+        # ⑧ モデル保存
+        pickle.dump(model_bull, open("model_bull.pkl", "wb"))
+        pickle.dump(model_bear, open("model_bear.pkl", "wb"))
+        pickle.dump(model_condor, open("model_condor.pkl", "wb"))
+        pickle.dump(le, open("pattern_encoder.pkl", "wb"))
+
+        return {"status": "学習完了", "records": len(df_train)}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ============================================================
 # 10) ログ保存 API（UI の logState() が呼ぶ）
 # ============================================================
@@ -720,6 +798,37 @@ HV (%):<br>
 <div id="backtestBox"></div>
 
 <hr>
+
+<button id="trainBtn">ML学習（LightGBM）を実行する</button>
+
+<div id="trainResult" style="margin-top:10px; font-size:14px;"></div>
+
+<script>
+document.getElementById("trainBtn").addEventListener("click", async () => {
+    document.getElementById("trainResult").innerText = "学習中です…（1〜3秒ほど）";
+
+    try {
+        const response = await fetch("/api/train_lightgbm", {
+            method: "POST"
+        });
+
+        const data = await response.json();
+
+        if (data.status === "学習完了") {
+            document.getElementById("trainResult").innerText =
+                "✔ LightGBMモデルの学習が完了しました（" + data.records + "件）";
+        } else {
+            document.getElementById("trainResult").innerText =
+                "⚠ エラー：" + JSON.stringify(data);
+        }
+
+    } catch (err) {
+        document.getElementById("trainResult").innerText =
+            "⚠ 通信エラー：" + err;
+    }
+});
+</script>
+
 
 <script>
 async function loadPrice(){
