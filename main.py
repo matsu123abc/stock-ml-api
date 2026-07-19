@@ -858,29 +858,45 @@ HV (%):<br>
 <h3>来月の LightGBM 戦略予測（専用入力）</h3>
 
 <div>
-    <label>HV（日経225）:</label>
-    <input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 18.5"><br>
+  <label>HV（日経225）:</label>
+  <input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 18.5"><br>
 
-    <label>HV（SPX）:</label>
-    <input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 16.2"><br>
+  <label>HV（SPX）:</label>
+  <input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 16.2"><br>
 
-    <label>pattern_prev（UP / DOWN / FLAT）:</label>
-    <input id="pred_pattern_prev" type="text" placeholder="例: UP"><br>
+  <label>pattern_prev（UP / DOWN / FLAT）:</label>
+  <input id="pred_pattern_prev" type="text" placeholder="例: UP"><br>
 
-    <label>現在の株価 S:</label>
-    <input id="pred_S" type="number" step="0.01" placeholder="例: 39000"><br>
+  <label>現在の株価 S (stock_price):</label>
+  <input id="pred_stock_price" type="number" step="0.01" placeholder="例: 39000"><br>
 
-    <label>翌月の株価 S_next:</label>
-    <input id="pred_S_next" type="number" step="0.01" placeholder="例: 39500"><br>
+  <label>翌月の株価 S_next:</label>
+  <input id="pred_S_next" type="number" step="0.01" placeholder="例: 39500"><br>
 
-    <label>IV（使用するIV）:</label>
-    <input id="pred_iv_used" type="number" step="0.0001" placeholder="例: 0.22"><br>
+  <label>ATM IV (atm_iv):</label>
+  <input id="pred_atm_iv" type="number" step="0.0001" placeholder="例: 0.22"><br>
+
+  <label>OTM IV (otm_iv):</label>
+  <input id="pred_otm_iv" type="number" step="0.0001" placeholder="例: 0.20"><br>
+
+  <label>gamma:</label>
+  <input id="pred_gamma" type="number" step="0.000001" placeholder="例: 0.0001"><br>
+
+  <label>delta:</label>
+  <input id="pred_delta" type="number" step="0.0001" placeholder="例: 0.5"><br>
+
+  <label>残存日数 (days_to_expiry):</label>
+  <input id="pred_days_to_expiry" type="number" step="1" placeholder="例: 30"><br>
+
+  <label>HV 20日 (hv_20d):</label>
+  <input id="pred_hv_20d" type="number" step="0.0001" placeholder="例: 17.8"><br>
+
+  <label>使用IV (iv_used):</label>
+  <input id="pred_iv_used" type="number" step="0.0001" placeholder="例: 0.22"><br>
 </div>
 
 <br>
-
-<button onclick="predictStrategy()">来月の戦略を予測する</button>
-
+<button type="button" onclick="predictStrategy()">来月の戦略を予測する</button>
 <div id="predictResultBox"></div>
 
 
@@ -975,19 +991,6 @@ ${data.market_view_auto}<br><br>
 取得できませんでした。
         `;
     }
-}
-
-function getInputData(){
-    return {
-        stock_price: parseFloat(document.getElementById("stock_price").value) || 0,
-        atm_iv: (parseFloat(document.getElementById("atm_iv").value) || 0) / 100,
-        otm_iv: (parseFloat(document.getElementById("otm_iv").value) || 0) / 100,
-        gamma: parseFloat(document.getElementById("gamma").value) || 0,
-        delta: parseFloat(document.getElementById("delta").value) || 0,
-        days_to_expiry: parseInt(document.getElementById("days_to_expiry").value) || 0,
-        hv_20d: (parseFloat(document.getElementById("hv_20d").value) || 0) / 100,
-        market_view: document.getElementById("market_view").value || ""
-    };
 }
 
 function predict(){
@@ -1106,49 +1109,72 @@ function getInputData() {
     return {
         hv_n225_prev: parseFloat(document.getElementById("pred_hv_n225_prev").value),
         hv_spx_prev: parseFloat(document.getElementById("pred_hv_spx_prev").value),
-        pattern_prev: document.getElementById("pred_pattern_prev").value.trim(),
-        S: parseFloat(document.getElementById("pred_S").value),
+        pattern_prev: document.getElementById("pred_pattern_prev").value.trim().toUpperCase(),
+        stock_price: parseFloat(document.getElementById("pred_stock_price").value),
         S_next: parseFloat(document.getElementById("pred_S_next").value),
+        atm_iv: parseFloat(document.getElementById("pred_atm_iv").value),
+        otm_iv: parseFloat(document.getElementById("pred_otm_iv").value),
+        gamma: parseFloat(document.getElementById("pred_gamma").value),
+        delta: parseFloat(document.getElementById("pred_delta").value),
+        days_to_expiry: parseInt(document.getElementById("pred_days_to_expiry").value, 10),
+        hv_20d: parseFloat(document.getElementById("pred_hv_20d").value),
         iv_used: parseFloat(document.getElementById("pred_iv_used").value)
     };
 }
 
-
 function predictStrategy() {
-
     const data = getInputData();
+    console.log("送信データ:", JSON.stringify(data));
+
+    // 必須チェック（NaN / null / 空文字）
+    const requiredNums = [
+        "hv_n225_prev","hv_spx_prev","stock_price","S_next",
+        "atm_iv","otm_iv","gamma","delta","days_to_expiry","hv_20d","iv_used"
+    ];
+    for (const k of requiredNums) {
+        if (data[k] === null || data[k] === undefined || Number.isNaN(data[k])) {
+            document.getElementById("predictResultBox").innerText =
+                "⚠ 入力エラー: 「" + k + "」が未入力または不正です。";
+            return;
+        }
+    }
+    if (!data.pattern_prev || !["UP","DOWN","FLAT"].includes(data.pattern_prev)) {
+        document.getElementById("predictResultBox").innerText =
+            "⚠ 入力エラー: pattern_prev は UP / DOWN / FLAT のいずれかを入力してください。";
+        return;
+    }
 
     fetch("/api/predict_strategy", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(data)
     })
-    .then(r => r.json())
+    .then(async r => {
+        const json = await r.json();
+        if (!r.ok) throw json;
+        return json;
+    })
     .then(result => {
-
-        if (result.error) {
-            document.getElementById("predictResultBox").innerHTML =
-                "⚠ エラー：" + JSON.stringify(result);
-            return;
-        }
-
-        const bull = result.bull_call_spread.toFixed(2);
-        const bear = result.bear_put_spread.toFixed(2);
-        const condor = result.iron_condor.toFixed(2);
-
-        const best = result.best_strategy;
+        // 結果が存在するか安全にチェック
+        const bull = (result.bull_call_spread !== undefined && result.bull_call_spread !== null) ? result.bull_call_spread.toFixed(2) : "N/A";
+        const bear = (result.bear_put_spread !== undefined && result.bear_put_spread !== null) ? result.bear_put_spread.toFixed(2) : "N/A";
+        const condor = (result.iron_condor !== undefined && result.iron_condor !== null) ? result.iron_condor.toFixed(2) : "N/A";
+        const best = result.best_strategy || "N/A";
 
         document.getElementById("predictResultBox").innerHTML = `
 <b>【LightGBM 推論結果】</b><br><br>
 bull_call_spread：${bull}<br>
 bear_put_spread：${bear}<br>
 iron_condor：${condor}<br><br>
-
 <b>推奨戦略：${best}</b>
         `;
+    })
+    .catch(err => {
+        console.error("推論エラー:", err);
+        document.getElementById("predictResultBox").innerText =
+            "⚠ サーバエラー：" + (err.detail ? JSON.stringify(err.detail) : JSON.stringify(err));
     });
 }
-
 
 window.onload = async () => {
     await loadPrice();
