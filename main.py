@@ -298,43 +298,61 @@ HV: {hv}
 # ============================================================
 # 9) MLデータ収集 API（5年間の月次データ）
 # ============================================================
-
 @app.get("/api/ml_collect_5y")
 def api_ml_collect_5y():
     try:
         df_n225 = yf.Ticker("^N225").history(period="5y")
-        if df_n225 is None or len(df_n225) == 0:
-            return {"error": "N225 data not available"}
         df_n225["Month"] = df_n225.index.to_period("M")
 
         df_spx = yf.Ticker("^GSPC").history(period="5y")
-        if df_spx is not None and len(df_spx) > 0:
-            df_spx["Month"] = df_spx.index.to_period("M")
-        else:
-            df_spx = None
+        df_spx["Month"] = df_spx.index.to_period("M")
 
         results = []
-        for month, df_month in df_n225.groupby("Month"):
-            pattern = classify_month(df_month)
-            hv_n225 = calc_hv(df_month)
 
-            hv_spx = None
-            if df_spx is not None:
-                df_spx_month = df_spx[df_spx["Month"] == month]
-                hv_spx = calc_hv(df_spx_month) if len(df_spx_month) > 0 else None
+        for month, df_month in df_n225.groupby("Month"):
+
+            # 月の最終日を取得
+            end_date = df_month.index[-1]
+
+            # 改善版 HV（過去20日）
+            hv_n225 = calc_hv_last20("^N225", end_date)
+            hv_spx = calc_hv_last20("^GSPC", end_date)
+
+            # 月内パターン分類（これは現状のままでOK）
+            pattern = classify_month(df_month)
 
             results.append({
                 "month": str(month),
                 "pattern_prev": pattern,
-                "hv_n225_prev": float(hv_n225) if hv_n225 is not None else None,
-                "hv_spx_prev": float(hv_spx) if hv_spx is not None else None
+                "hv_n225_prev": hv_n225,
+                "hv_spx_prev": hv_spx
             })
 
         return results
 
-    except Exception:
-        logger.exception("api_ml_collect_5y error")
-        return {"error": "ml collect failed"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def calc_hv_last20(ticker, end_date):
+    """
+    end_date（その月の最終日）を基準に過去20日分の連続データでHVを計算する
+    """
+    try:
+        df = yf.Ticker(ticker).history(start=end_date - datetime.timedelta(days=40),
+                                       end=end_date + datetime.timedelta(days=1))
+
+        if df is None or len(df) < 20:
+            return None
+
+        closes = df["Close"].values
+        log_returns = np.log(closes[1:] / closes[:-1])
+        hv = float(np.std(log_returns[-20:]) * np.sqrt(252))
+        return hv
+
+    except Exception as e:
+        return None
+
 
 # ============================================================
 # 10) ログ保存 API（UI の logState() が呼ぶ）
