@@ -565,7 +565,7 @@ import pickle
 @app.post("/api/train_lightgbm")
 def train_lightgbm():
     """
-    ML学習API：
+    ML学習API（修正版）：
     - MLデータ（HV・pattern）を取得
     - BSバックテスト結果（PNL）を取得
     - 学習用データフレームを作成
@@ -585,9 +585,9 @@ def train_lightgbm():
         # ③ 月で結合
         df = df_ml.merge(df_bt, on="month")
 
-        # ④ pattern_prev をラベルエンコード
+        # ④ pattern_prev をラベルエンコード（MLデータ側を使う）
         le = LabelEncoder()
-        df["pattern_prev_enc"] = le.fit_transform(df["pattern_prev"])
+        df["pattern_prev_enc"] = le.fit_transform(df_ml["pattern_prev"])
 
         # ⑤ 学習用データフレーム作成
         df_train = pd.DataFrame({
