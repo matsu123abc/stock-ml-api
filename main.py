@@ -557,43 +557,6 @@ def api_backtest_strategies():
         return {"error": str(e)}
 
 
-from azure.storage.blob import BlobServiceClient
-import pickle
-import os
-
-@app.post("/api/train_lightgbm")
-async def train_lightgbm():
-
-    # Blob 接続（章さんのコードと同じ）
-    blob_service = BlobServiceClient.from_connection_string(
-        os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    )
-    container = blob_service.get_container_client("models")
-
-    # --- ここは学習処理（省略） ---
-    # model_bull, model_bear, model_condor, le が生成される
-
-    # PKL をバイト列に変換
-    def to_bytes(obj):
-        return pickle.dumps(obj)
-
-    # Blob にアップロード（章さんの result_blob と同じ構造）
-    container.get_blob_client("model_bull.pkl").upload_blob(
-        to_bytes(model_bull), overwrite=True
-    )
-    container.get_blob_client("model_bear.pkl").upload_blob(
-        to_bytes(model_bear), overwrite=True
-    )
-    container.get_blob_client("model_condor.pkl").upload_blob(
-        to_bytes(model_condor), overwrite=True
-    )
-    container.get_blob_client("pattern_encoder.pkl").upload_blob(
-        to_bytes(le), overwrite=True
-    )
-
-    return {"status": "学習完了（Blob保存）"}
-
-
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from lightgbm import LGBMRegressor
