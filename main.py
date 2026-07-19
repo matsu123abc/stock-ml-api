@@ -333,6 +333,38 @@ HV: {hv}
         return {"error": "market view failed"}
 
 # ============================================================
+# GPT専用推論 API（MarketState を使う）
+# ============================================================
+
+class MarketState(BaseModel):
+    stock_price: float
+    atm_iv: float
+    otm_iv: float
+    gamma: float
+    delta: float
+    days_to_expiry: int
+    hv_20d: float
+    market_view: Optional[str] = ""
+
+@app.post("/api/predict_gpt")
+def api_predict_gpt(m: MarketState):
+    try:
+        gpt = gpt_predict(m)
+        if gpt and gpt.get("strategy"):
+            return {
+                "source": "GPT",
+                "result": gpt,
+                "timestamp": datetime.datetime.utcnow().isoformat(),
+                "request_id": str(uuid.uuid4())
+            }
+        else:
+            raise HTTPException(status_code=500, detail="GPT推論が失敗しました")
+    except Exception as e:
+        logger.exception("api_predict_gpt error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
 # 9) MLデータ収集 API（5年間の月次データ）
 # ============================================================
 @app.get("/api/ml_collect_5y")
@@ -564,64 +596,54 @@ import pickle
 import os
 from azure.storage.blob import BlobServiceClient
 
+# ============================================================
+# ML入力（3変数専用）
+# ============================================================
+
+class MLPredictRequest(BaseModel):
+    pattern_prev: str
+    hv_n225_prev: float
+    hv_spx_prev: float
+
+# ============================================================
+# LightGBM 学習（3変数専用）
+# ============================================================
+
 @app.post("/api/train_lightgbm")
 def train_lightgbm():
     try:
-        # ① MLデータ取得
+        # MLデータ（pattern_prev, hv_n225_prev, hv_spx_prev）
         ml_data = api_ml_collect_5y()
         df_ml = pd.DataFrame(ml_data)
 
-        # MLデータは 61 行 → バックテストに合わせて最後の 1 行を削除
-        df_ml = df_ml.iloc[:-1].reset_index(drop=True)
-
-        # ② BSバックテスト結果取得（60行）
+        # バックテスト結果（best_strategy, best_pnl）
         bt_data = api_backtest_strategies()
         df_bt = pd.DataFrame(bt_data)
 
-        # ③ 月で結合（60行になる）
+        # 月で結合
         df = df_ml.merge(df_bt, on="month")
 
-        # ④ pattern_prev をラベルエンコード（MLデータ側を使う）
+        # pattern_prev をラベルエンコード
         le = LabelEncoder()
-        df["pattern_prev_enc"] = le.fit_transform(df_ml["pattern_prev"])
+        df["pattern_prev_enc"] = le.fit_transform(df["pattern_prev"])
 
-        # ⑤ 学習用データフレーム作成
-        df_train = pd.DataFrame({
-            "hv_n225_prev": df["hv_n225_prev"],
-            "hv_spx_prev": df["hv_spx_prev"],
-            "pattern_prev_enc": df["pattern_prev_enc"],
-            "S": df["S"],
-            "S_next": df["S_next"],
-            "iv_used": df["iv_used"],
-            "pnl_bull_call_next": df["best_pnl"].where(df["best_strategy"]=="bull_call_spread", 0),
-            "pnl_bear_put_next": df["best_pnl"].where(df["best_strategy"]=="bear_put_spread", 0),
-            "pnl_iron_condor_next": df["best_pnl"].where(df["best_strategy"]=="iron_condor", 0),
-        })
+        # 特徴量（3変数＋エンコード）
+        X = df[["hv_n225_prev", "hv_spx_prev", "pattern_prev_enc"]]
 
-        # ⑥ 特徴量と目的変数
-        X = df_train[[
-            "hv_n225_prev",
-            "hv_spx_prev",
-            "pattern_prev_enc",
-            "S",
-            "S_next",
-            "iv_used",
-        ]]
+        # 目的変数（戦略別PNL）
+        y_bull = df["best_pnl"].where(df["best_strategy"] == "bull_call_spread", 0)
+        y_bear = df["best_pnl"].where(df["best_strategy"] == "bear_put_spread", 0)
+        y_condor = df["best_pnl"].where(df["best_strategy"] == "iron_condor", 0)
 
-        y_bull = df_train["pnl_bull_call_next"]
-        y_bear = df_train["pnl_bear_put_next"]
-        y_condor = df_train["pnl_iron_condor_next"]
-
-        # ⑦ LightGBMモデル学習
+        # LightGBM 学習
         model_bull = LGBMRegressor().fit(X, y_bull)
         model_bear = LGBMRegressor().fit(X, y_bear)
         model_condor = LGBMRegressor().fit(X, y_condor)
 
-        # ⑧ Blob Storage に保存（章さんの実績コードと同じ構造）
+        # Blob Storage 保存
         blob_service = BlobServiceClient.from_connection_string(
             os.getenv("AZURE_STORAGE_CONNECTION_STRING")
         )
-
         container_name = os.getenv("MODEL_CONTAINER", "models")
         container = blob_service.get_container_client(container_name)
 
@@ -634,7 +656,63 @@ def train_lightgbm():
         upload_pkl("model_condor.pkl", model_condor)
         upload_pkl("pattern_encoder.pkl", le)
 
-        return {"status": "学習完了（Blob保存）", "records": len(df_train)}
+        return {"status": "学習完了（3変数ML）", "records": len(df)}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# ============================================================
+# ML推論（3変数専用）
+# ============================================================
+
+@app.post("/api/predict_strategy")
+def api_predict_strategy(m: MLPredictRequest):
+    try:
+        # モデル読み込み
+        blob_service = BlobServiceClient.from_connection_string(
+            os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        )
+        container_name = os.getenv("MODEL_CONTAINER", "models")
+        container = blob_service.get_container_client(container_name)
+
+        def load_pkl(name):
+            blob = container.get_blob_client(name)
+            data = blob.download_blob().readall()
+            return pickle.loads(data)
+
+        model_bull = load_pkl("model_bull.pkl")
+        model_bear = load_pkl("model_bear.pkl")
+        model_condor = load_pkl("model_condor.pkl")
+        le = load_pkl("pattern_encoder.pkl")
+
+        # pattern_prev をエンコード
+        pattern_enc = int(le.transform([m.pattern_prev])[0])
+
+        # 特徴量ベクトル
+        X = np.array([[m.hv_n225_prev, m.hv_spx_prev, pattern_enc]])
+
+        # 推論
+        bull = float(model_bull.predict(X)[0])
+        bear = float(model_bear.predict(X)[0])
+        condor = float(model_condor.predict(X)[0])
+
+        # 最良戦略
+        strategies = {
+            "bull_call_spread": bull,
+            "bear_put_spread": bear,
+            "iron_condor": condor
+        }
+        best = max(strategies, key=strategies.get)
+
+        return {
+            "source": "ML",
+            "bull_call_spread": bull,
+            "bear_put_spread": bear,
+            "iron_condor": condor,
+            "best_strategy": best,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "request_id": str(uuid.uuid4())
+        }
 
     except Exception as e:
         return {"error": str(e)}
@@ -786,6 +864,27 @@ HV (%):<br>
 
 <hr>
 
+<h3>来月の LightGBM 戦略予測（3変数版）</h3>
+
+<label>pattern_prev（UP / DOWN / FLAT / UPDOWN / DOWNUP）:</label>
+<input id="pred_pattern_prev" type="text" placeholder="例: UP"><br>
+<small class="helper">大文字で入力してください（UP / DOWN / FLAT / UPDOWN / DOWNUP）</small>
+
+<label>HV（日経225） hv_n225_prev:</label>
+<input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 0.3522"><br>
+<small class="helper">小数表記（例: 0.3522 = 35.22%）</small>
+
+<label>HV（SPX） hv_spx_prev:</label>
+<input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 0.1517"><br>
+<small class="helper">小数表記（例: 0.1517 = 15.17%）</small>
+
+<br>
+<button type="button" onclick="predictStrategy()">来月の戦略を予測する（3変数ML）</button>
+
+<div id="predictResultBox" class="panel"></div>
+
+<hr>
+
 <h3>ログ保存</h3>
 <button onclick="logState()">ログ保存する</button>
 <div id="logBox"></div>
@@ -819,9 +918,10 @@ document.getElementById("trainBtn").addEventListener("click", async () => {
 
         const data = await response.json();
 
+        // ★ ここを修正：3変数ML版のステータスに対応
         if (data.status && data.status.includes("学習完了")) {
             document.getElementById("trainResult").innerText =
-                "✔ LightGBMモデルの学習が完了しました（" + data.records + "件）";
+                "✔ LightGBMモデル（3変数版）の学習が完了しました（" + data.records + "件）";
         } else {
             document.getElementById("trainResult").innerText =
                 "⚠ エラー：" + JSON.stringify(data);
@@ -833,6 +933,7 @@ document.getElementById("trainBtn").addEventListener("click", async () => {
     }
 });
 </script>
+
 
 
 <script>
@@ -892,10 +993,11 @@ function getInputData(){
     };
 }
 
+
 function predict(){
     const data = getInputData();
 
-    fetch("/api/predict_strategy", {
+    fetch("/api/predict_gpt", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify(data)
@@ -923,15 +1025,13 @@ request_id: ${result.request_id}
             `;
         } else {
             document.getElementById("resultBox").innerHTML = `
-<b>【ML推論結果】</b><br><br>
-strategy: ${result.strategy}<br>
-confidence: ${result.confidence}<br>
-timestamp: ${result.timestamp}<br>
-request_id: ${result.request_id}
+<b>GPT推論に失敗しました</b><br>
+${JSON.stringify(result)}
             `;
         }
     });
 }
+
 
 function logState(){
     const data = getInputData();
@@ -1003,6 +1103,79 @@ S_next: ${row.S_next}<br><br>
 
     document.getElementById("backtestBox").innerHTML = html;
 }
+
+
+function getMLInput3() {
+    return {
+        pattern_prev: (document.getElementById("pred_pattern_prev").value || "").trim().toUpperCase(),
+        hv_n225_prev: parseFloat(document.getElementById("pred_hv_n225_prev").value),
+        hv_spx_prev: parseFloat(document.getElementById("pred_hv_spx_prev").value)
+    };
+}
+
+function predictStrategy() {
+    const data = getMLInput3();
+
+    // --- 入力チェック ---
+    if (!["UP","DOWN","FLAT","UPDOWN","DOWNUP"].includes(data.pattern_prev)) {
+        document.getElementById("predictResultBox").innerHTML =
+            "⚠ pattern_prev は UP / DOWN / FLAT / UPDOWN / DOWNUP のいずれかを入力してください";
+        return;
+    }
+    if (isNaN(data.hv_n225_prev)) {
+        document.getElementById("predictResultBox").innerHTML =
+            "⚠ hv_n225_prev が未入力または不正です";
+        return;
+    }
+    if (isNaN(data.hv_spx_prev)) {
+        document.getElementById("predictResultBox").innerHTML =
+            "⚠ hv_spx_prev が未入力または不正です";
+        return;
+    }
+
+    // --- 送信 ---
+    fetch("/api/predict_strategy", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+    })
+    .then(async r => {
+        const json = await r.json();
+        if (!r.ok) throw json;
+        return json;
+    })
+    .then(result => {
+        // --- ML結果の表示 ---
+        const bull = (result.bull_call_spread !== undefined)
+            ? Number(result.bull_call_spread).toFixed(2)
+            : "N/A";
+
+        const bear = (result.bear_put_spread !== undefined)
+            ? Number(result.bear_put_spread).toFixed(2)
+            : "N/A";
+
+        const condor = (result.iron_condor !== undefined)
+            ? Number(result.iron_condor).toFixed(2)
+            : "N/A";
+
+        const best = result.best_strategy || "N/A";
+
+        document.getElementById("predictResultBox").innerHTML = `
+<b>【LightGBM 推論結果（3変数版）】</b><br><br>
+bull_call_spread：${bull}<br>
+bear_put_spread：${bear}<br>
+iron_condor：${condor}<br><br>
+<b>推奨戦略：${best}</b><br><br>
+timestamp: ${result.timestamp}<br>
+request_id: ${result.request_id}
+        `;
+    })
+    .catch(err => {
+        document.getElementById("predictResultBox").innerHTML =
+            "⚠ サーバエラー：" + JSON.stringify(err);
+    });
+}
+
 
 window.onload = async () => {
     await loadPrice();
