@@ -855,9 +855,34 @@ HV (%):<br>
 
 <hr>
 
+<h3>来月の LightGBM 戦略予測（専用入力）</h3>
+
+<div>
+    <label>HV（日経225）:</label>
+    <input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 18.5"><br>
+
+    <label>HV（SPX）:</label>
+    <input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 16.2"><br>
+
+    <label>pattern_prev（UP / DOWN / FLAT）:</label>
+    <input id="pred_pattern_prev" type="text" placeholder="例: UP"><br>
+
+    <label>現在の株価 S:</label>
+    <input id="pred_S" type="number" step="0.01" placeholder="例: 39000"><br>
+
+    <label>翌月の株価 S_next:</label>
+    <input id="pred_S_next" type="number" step="0.01" placeholder="例: 39500"><br>
+
+    <label>IV（使用するIV）:</label>
+    <input id="pred_iv_used" type="number" step="0.0001" placeholder="例: 0.22"><br>
+</div>
+
+<br>
+
 <button onclick="predictStrategy()">来月の戦略を予測する</button>
 
 <div id="predictResultBox"></div>
+
 
 <h3>ログ保存</h3>
 <button onclick="logState()">ログ保存する</button>
@@ -1077,9 +1102,19 @@ S_next: ${row.S_next}<br><br>
     document.getElementById("backtestBox").innerHTML = html;
 }
 
+function getInputData() {
+    return {
+        hv_n225_prev: parseFloat(document.getElementById("pred_hv_n225_prev").value),
+        hv_spx_prev: parseFloat(document.getElementById("pred_hv_spx_prev").value),
+        pattern_prev: document.getElementById("pred_pattern_prev").value,
+        S: parseFloat(document.getElementById("pred_S").value),
+        S_next: parseFloat(document.getElementById("pred_S_next").value),
+        iv_used: parseFloat(document.getElementById("pred_iv_used").value)
+    };
+}
+
 function predictStrategy() {
 
-    // 入力データを UI から取得（章さんの既存 getInputData を使う場合）
     const data = getInputData();
 
     fetch("/api/predict_strategy", {
