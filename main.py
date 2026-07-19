@@ -818,8 +818,8 @@ HV (%):<br>
 
 <hr>
 
-<!-- GPT市場予想（参考） -->
-<button onclick="loadAutoMarketView()">GPT市場予想（参考）を取得する</button>
+<!-- AI市場予想（参考） -->
+<button onclick="loadAutoMarketView()">AI市場予想（参考）を取得する</button>
 <div id="autoMarketViewBox"></div>
 
 <hr>
@@ -842,21 +842,25 @@ HV (%):<br>
 
 <h3>来月の LightGBM 戦略予測（3変数版）</h3>
 
-<label>pattern_prev（UP / DOWN / FLAT / UPDOWN / DOWNUP）:</label>
-<input id="pred_pattern_prev" type="text" placeholder="例: UP"><br>
-<small class="helper">大文字で入力してください（UP / DOWN / FLAT / UPDOWN / DOWNUP）</small>
+<div class="input-block">
+  <label>pattern_prev（UP / DOWN / FLAT / UPDOWN / DOWNUP）:</label>
+  <input id="pred_pattern_prev" type="text" placeholder="例: UP">
+  <small>大文字で入力してください（UP / DOWN / FLAT / UPDOWN / DOWNUP）</small>
+</div>
 
-<label>HV（日経225） hv_n225_prev:</label>
-<input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 0.3522"><br>
-<small class="helper">小数表記（例: 0.3522 = 35.22%）</small>
+<div class="input-block">
+  <label>HV（日経225） hv_n225_prev:</label>
+  <input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 0.3522">
+  <small>小数表記（例: 0.3522 = 35.22%）</small>
+</div>
 
-<label>HV（SPX） hv_spx_prev:</label>
-<input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 0.1517"><br>
-<small class="helper">小数表記（例: 0.1517 = 15.17%）</small>
+<div class="input-block">
+  <label>HV（SPX） hv_spx_prev:</label>
+  <input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 0.1517">
+  <small>小数表記（例: 0.1517 = 15.17%）</small>
+</div>
 
-<br>
-<button type="button" onclick="predictStrategy()">来月の戦略を予測する（3変数ML）</button>
-
+<button type="button" onclick="predictStrategy()">来月の戦略を機械学習で予測する </button>
 <div id="predictResultBox" class="panel"></div>
 
 <hr>
