@@ -367,6 +367,7 @@ def calc_hv_last20(ticker, end_date):
     except Exception as e:
         return None
 
+
 def smooth_hv(values, window=3):
     """
     ロバスト移動平均（中央値ベース）
@@ -381,6 +382,35 @@ def smooth_hv(values, window=3):
         median = float(np.median(window_vals))
         smoothed.append(median)
     return smoothed
+
+
+def calc_hv_mid20(ticker, df_month):
+    """
+    月の中間日を基準に過去20日 HV を計算する（ノイズを減らす改善版）
+    """
+    try:
+        # 月の中間日を取得
+        mid_index = len(df_month) // 2
+        mid_date = df_month.index[mid_index]
+
+        # 過去40日分を取得（20日分を確実に確保するため）
+        df = yf.Ticker(ticker).history(
+            start=mid_date - datetime.timedelta(days=40),
+            end=mid_date + datetime.timedelta(days=1)
+        )
+
+        if df is None or len(df) < 20:
+            return None
+
+        closes = df["Close"].values
+        log_returns = np.log(closes[1:] / closes[:-1])
+
+        hv = float(np.std(log_returns[-20:]) * np.sqrt(252))
+        return hv
+
+    except Exception as e:
+        print("calc_hv_mid20 error:", e)
+        return None
 
 
 # ============================================================
