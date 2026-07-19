@@ -6,3 +6,5 @@ pandas
 scipy
 openai
 lightgbm
+scikit-learn
+
