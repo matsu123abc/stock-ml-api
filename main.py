@@ -8,6 +8,7 @@ import json
 import yfinance as yf
 import numpy as np
 import logging
+import pandas as pd
 from openai import AzureOpenAI
 from typing import Optional
 
