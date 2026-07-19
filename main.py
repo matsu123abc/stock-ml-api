@@ -625,7 +625,7 @@ def train_lightgbm():
 
         # pattern_prev をラベルエンコード
         le = LabelEncoder()
-        df["pattern_prev_enc"] = le.fit_transform(df["pattern_prev"])
+        df["pattern_prev_enc"] = le.fit_transform(df_ml["pattern_prev"])
 
         # 特徴量（3変数＋エンコード）
         X = df[["hv_n225_prev", "hv_spx_prev", "pattern_prev_enc"]]
@@ -664,7 +664,6 @@ def train_lightgbm():
 # ============================================================
 # ML推論（3変数専用）
 # ============================================================
-
 @app.post("/api/predict_strategy")
 def api_predict_strategy(m: MLPredictRequest):
     try:
