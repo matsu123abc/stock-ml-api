@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import datetime
@@ -7,7 +7,13 @@ import os
 import json
 import yfinance as yf
 import numpy as np
+import logging
 from openai import AzureOpenAI
+from typing import Optional
+
+# --- ログ設定 ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("stock-ml-api")
 
 app = FastAPI(title="stock-ml-api (GPT+ML hybrid, AzureOpenAI)")
 
@@ -23,34 +29,97 @@ class MarketState(BaseModel):
     delta: float
     days_to_expiry: int
     hv_20d: float
-    market_view: str | None = ""   # 自分の市場予想
+    market_view: Optional[str] = ""   # 自分の市場予想
 
 # ============================================================
-# 2) ML推論ロジック
+# 2) ユーティリティ関数（分類・HV計算・Azureチェック）
+# ============================================================
+
+def classify_month(df_month):
+    try:
+        if df_month is None or len(df_month) == 0:
+            return "FLAT"
+        open_price = float(df_month["Open"].iloc[0])
+        close_price = float(df_month["Close"].iloc[-1])
+        high_price = float(df_month["High"].max())
+        low_price = float(df_month["Low"].min())
+
+        mid_index = max(0, len(df_month) // 2)
+        mid_price = float(df_month["Close"].iloc[mid_index])
+
+        change_total = (close_price - open_price) / open_price if open_price != 0 else 0
+        change_open_mid = (mid_price - open_price) / open_price if open_price != 0 else 0
+        change_mid_close = (close_price - mid_price) / mid_price if mid_price != 0 else 0
+        range_month = (high_price - low_price) / open_price if open_price != 0 else 0
+
+        if change_total > 0.03:
+            return "UP"
+        if change_total < -0.03:
+            return "DOWN"
+        if range_month < 0.02:
+            return "FLAT"
+        if change_open_mid > 0.02 and change_mid_close < -0.02:
+            return "UPDOWN"
+        if change_open_mid < -0.02 and change_mid_close > 0.02:
+            return "DOWNUP"
+
+        return "FLAT"
+    except Exception as e:
+        logger.exception("classify_month error")
+        return "FLAT"
+
+def calc_hv(df):
+    try:
+        if df is None or len(df) < 2:
+            return None
+        returns = np.log(df["Close"] / df["Close"].shift(1)).dropna()
+        if len(returns) == 0:
+            return None
+        hv = float(returns.std() * np.sqrt(252))
+        return hv
+    except Exception as e:
+        logger.exception("calc_hv error")
+        return None
+
+def azure_config_ok():
+    if not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_DEPLOYMENT") or not os.getenv("AZURE_OPENAI_ENDPOINT"):
+        return False
+    return True
+
+# ============================================================
+# 3) ML推論ロジック
 # ============================================================
 
 def ml_predict(m: MarketState):
-    if m.atm_iv > 0.3 and m.days_to_expiry <= 7:
-        return "short_close", 0.82
-    if m.atm_iv < 0.15 and m.days_to_expiry >= 20:
-        return "spread_hold", 0.76
-    if m.hv_20d > 0.25 and m.otm_iv > 0.3:
-        return "long_only", 0.71
-    return "no_trade", 0.63
+    try:
+        if m.atm_iv > 0.3 and m.days_to_expiry <= 7:
+            return "short_close", 0.82
+        if m.atm_iv < 0.15 and m.days_to_expiry >= 20:
+            return "spread_hold", 0.76
+        if m.hv_20d > 0.25 and m.otm_iv > 0.3:
+            return "long_only", 0.71
+        return "no_trade", 0.63
+    except Exception:
+        logger.exception("ml_predict error")
+        return "no_trade", 0.0
 
 # ============================================================
-# 3) GPT推論（AzureOpenAI）
+# 4) GPT推論（AzureOpenAI）
 # ============================================================
 
 def gpt_predict(m: MarketState):
+    if not azure_config_ok():
+        logger.info("Azure OpenAI config missing")
+        return None
 
-    client = AzureOpenAI(
-        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
-    )
+    try:
+        client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+        )
 
-    prompt = f"""
+        prompt = f"""
 あなたはプロのオプション戦略アナリストです。
 以下の市場状態と市場予想を総合評価し、最適な戦略を1つ選び、理由を説明してください。
 
@@ -77,8 +146,6 @@ HV: {m.hv_20d}
   "next_step": ""
 }}
 """
-
-    try:
         res = client.chat.completions.create(
             model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
             messages=[{"role": "user", "content": prompt}],
@@ -87,10 +154,11 @@ HV: {m.hv_20d}
 
         raw = res.choices[0].message.content.strip()
 
+        # 安全に JSON 部分を抽出してパース
         json_start = raw.find("{")
         json_end = raw.rfind("}") + 1
-
         if json_start == -1 or json_end == -1:
+            logger.warning("GPT did not return JSON")
             return None
 
         json_text = raw[json_start:json_end]
@@ -99,78 +167,84 @@ HV: {m.hv_20d}
         return json.loads(json_text)
 
     except Exception:
+        logger.exception("gpt_predict error")
         return None
 
 # ============================================================
-# 4) GPT→ML 二本立て推論 API
+# 5) GPT→ML 二本立て推論 API
 # ============================================================
 
 @app.post("/api/predict_strategy")
 def api_predict_strategy(m: MarketState):
+    try:
+        gpt = gpt_predict(m)
+        if gpt and gpt.get("strategy"):
+            return {
+                "source": "GPT",
+                "result": gpt,
+                "timestamp": datetime.datetime.utcnow().isoformat(),
+                "request_id": str(uuid.uuid4())
+            }
 
-    gpt = gpt_predict(m)
-
-    if gpt and gpt.get("strategy"):
+        strategy, confidence = ml_predict(m)
         return {
-            "source": "GPT",
-            "result": gpt,
-            "timestamp": datetime.datetime.utcnow(),
+            "source": "ML",
+            "strategy": strategy,
+            "confidence": confidence,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
             "request_id": str(uuid.uuid4())
         }
-
-    strategy, confidence = ml_predict(m)
-
-    return {
-        "source": "ML",
-        "strategy": strategy,
-        "confidence": confidence,
-        "timestamp": datetime.datetime.utcnow(),
-        "request_id": str(uuid.uuid4())
-    }
+    except Exception:
+        logger.exception("api_predict_strategy error")
+        raise HTTPException(status_code=500, detail="prediction failed")
 
 # ============================================================
-# 5) 株価自動取得 API
+# 6) 株価自動取得 API
 # ============================================================
 
 @app.get("/api/price")
 def api_price(ticker: str = "^N225"):
     try:
-        info = yf.Ticker(ticker).info
-        return {
-            "price": info.get("regularMarketPrice"),
-            "previous_close": info.get("regularMarketPreviousClose")
-        }
-    except Exception as e:
-        return {"error": str(e)}
+        hist = yf.Ticker(ticker).history(period="2d")
+        if hist is None or len(hist) == 0:
+            return {"price": None}
+        price = float(hist["Close"].iloc[-1])
+        prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else None
+        return {"price": price, "previous_close": prev}
+    except Exception:
+        logger.exception("api_price error")
+        return {"error": "price fetch failed"}
 
 # ============================================================
-# 6) HV自動取得 API
+# 7) HV自動取得 API
 # ============================================================
 
 @app.get("/api/hv")
 def api_hv(ticker: str = "^N225", days: int = 20):
     try:
         hist = yf.Ticker(ticker).history(period=f"{days+1}d")
-        if len(hist) < days + 1:
+        if hist is None or len(hist) < 2:
             return {"hv": None}
-
         close = hist["Close"].values
         log_returns = np.log(close[1:] / close[:-1])
         hv = float(np.std(log_returns) * np.sqrt(252))
         return {"hv": hv}
-
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        logger.exception("api_hv error")
+        return {"error": "hv fetch failed"}
 
 # ============================================================
-# 7) GPT 市場予想 API
+# 8) GPT 市場予想 API
 # ============================================================
 
 @app.get("/api/market_view_auto")
 def api_market_view_auto(ticker: str = "^N225"):
+    if not azure_config_ok():
+        return {"market_view_auto": "Azure config missing", "reason": ""}
+
     try:
         hist = yf.Ticker(ticker).history(period="30d")
-        if len(hist) < 10:
+        if hist is None or len(hist) < 10:
             return {"market_view_auto": "データ不足", "reason": ""}
 
         closes = hist["Close"].values
@@ -213,147 +287,93 @@ HV: {hv}
             json_text = raw[json_start:json_end]
             json_text = json_text.replace("```json", "").replace("```", "").strip()
             return json.loads(json_text)
-        except:
-            return {
-                "market_view_auto": "GPTがJSONを返しませんでした",
-                "reason": raw
-            }
+        except Exception:
+            logger.exception("market_view_auto parse error")
+            return {"market_view_auto": "GPTがJSONを返しませんでした", "reason": raw}
 
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        logger.exception("api_market_view_auto error")
+        return {"error": "market view failed"}
 
 # ============================================================
-# 8) MLデータ収集 API（5年間の月次データ）
+# 9) MLデータ収集 API（5年間の月次データ）
 # ============================================================
-
-def classify_month(df_month):
-    open_price = df_month["Open"].iloc[0]
-    close_price = df_month["Close"].iloc[-1]
-    high_price = df_month["High"].max()
-    low_price = df_month["Low"].min()
-
-    mid_index = len(df_month) // 2
-    mid_price = df_month["Close"].iloc[mid_index]
-
-    change_total = (close_price - open_price) / open_price
-    change_open_mid = (mid_price - open_price) / open_price
-    change_mid_close = (close_price - mid_price) / mid_price
-    range_month = (high_price - low_price) / open_price
-
-    if change_total > 0.03:
-        return "UP"
-    if change_total < -0.03:
-        return "DOWN"
-    if range_month < 0.02:
-        return "FLAT"
-    if change_open_mid > 0.02 and change_mid_close < -0.02:
-        return "UPDOWN"
-    if change_open_mid < -0.02 and change_mid_close > 0.02:
-        return "DOWNUP"
-
-    return "FLAT"
-
-
-def calc_hv(df):
-    returns = np.log(df["Close"] / df["Close"].shift(1)).dropna()
-    return float(returns.std() * np.sqrt(252))
-
 
 @app.get("/api/ml_collect_5y")
 def api_ml_collect_5y():
     try:
         df_n225 = yf.Ticker("^N225").history(period="5y")
+        if df_n225 is None or len(df_n225) == 0:
+            return {"error": "N225 data not available"}
         df_n225["Month"] = df_n225.index.to_period("M")
 
         df_spx = yf.Ticker("^GSPC").history(period="5y")
-        df_spx["Month"] = df_spx.index.to_period("M")
+        if df_spx is not None and len(df_spx) > 0:
+            df_spx["Month"] = df_spx.index.to_period("M")
+        else:
+            df_spx = None
 
         results = []
-
         for month, df_month in df_n225.groupby("Month"):
             pattern = classify_month(df_month)
             hv_n225 = calc_hv(df_month)
 
-            df_spx_month = df_spx[df_spx["Month"] == month]
-            hv_spx = calc_hv(df_spx_month) if len(df_spx_month) > 0 else None
+            hv_spx = None
+            if df_spx is not None:
+                df_spx_month = df_spx[df_spx["Month"] == month]
+                hv_spx = calc_hv(df_spx_month) if len(df_spx_month) > 0 else None
 
             results.append({
                 "month": str(month),
                 "pattern_prev": pattern,
-                "hv_n225_prev": hv_n225,
-                "hv_spx_prev": hv_spx
+                "hv_n225_prev": float(hv_n225) if hv_n225 is not None else None,
+                "hv_spx_prev": float(hv_spx) if hv_spx is not None else None
             })
 
         return results
 
-    except Exception as e:
-        return {"error": str(e)}
-    
-@app.get("/api/ml_collect_5y")
-def api_ml_collect_5y():
-    try:
-        df_n225 = yf.Ticker("^N225").history(period="5y")
-        df_n225["Month"] = df_n225.index.to_period("M")
-
-        df_spx = yf.Ticker("^GSPC").history(period="5y")
-        df_spx["Month"] = df_spx.index.to_period("M")
-
-        results = []
-
-        for month, df_month in df_n225.groupby("Month"):
-            pattern = classify_month(df_month)
-            hv_n225 = calc_hv(df_month)
-
-            df_spx_month = df_spx[df_spx["Month"] == month]
-            hv_spx = calc_hv(df_spx_month) if len(df_spx_month) > 0 else None
-
-            results.append({
-                "month": str(month),
-                "pattern_prev": pattern,
-                "hv_n225_prev": hv_n225,
-                "hv_spx_prev": hv_spx
-            })
-
-        return results
-
-    except Exception as e:
-        return {"error": str(e)}
-
-def classify_month(df_month):
-    open_price = df_month["Open"].iloc[0]
-    close_price = df_month["Close"].iloc[-1]
-    high_price = df_month["High"].max()
-    low_price = df_month["Low"].min()
-
-    mid_index = len(df_month) // 2
-    mid_price = df_month["Close"].iloc[mid_index]
-
-    change_total = (close_price - open_price) / open_price
-    change_open_mid = (mid_price - open_price) / open_price
-    change_mid_close = (close_price - mid_price) / mid_price
-    range_month = (high_price - low_price) / open_price
-
-    if change_total > 0.03:
-        return "UP"
-    if change_total < -0.03:
-        return "DOWN"
-    if range_month < 0.02:
-        return "FLAT"
-    if change_open_mid > 0.02 and change_mid_close < -0.02:
-        return "UPDOWN"
-    if change_open_mid < -0.02 and change_mid_close > 0.02:
-        return "DOWNUP"
-
-    return "FLAT"
-
-
-def calc_hv(df):
-    returns = np.log(df["Close"] / df["Close"].shift(1)).dropna()
-    return float(returns.std() * np.sqrt(252))
-
+    except Exception:
+        logger.exception("api_ml_collect_5y error")
+        return {"error": "ml collect failed"}
 
 # ============================================================
-# 9) HTML（スマホ最適化 UI）
+# 10) ログ保存 API（UI の logState() が呼ぶ）
+# ============================================================
+
+LOG_FILE = "market_logs.json"
+
+@app.post("/api/log_market_state")
+def api_log_market_state(payload: dict):
+    try:
+        log_id = str(uuid.uuid4())
+        saved_at = datetime.datetime.utcnow().isoformat()
+        entry = {
+            "log_id": log_id,
+            "saved_at": saved_at,
+            "payload": payload
+        }
+
+        # ファイルに追記（JSON配列形式）
+        if os.path.exists(LOG_FILE):
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = []
+        else:
+            data = []
+
+        data.append(entry)
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return {"log_id": log_id, "saved_at": saved_at}
+    except Exception:
+        logger.exception("api_log_market_state error")
+        raise HTTPException(status_code=500, detail="log save failed")
+
+# ============================================================
+# 11) HTML（スマホ最適化 UI）
 # ============================================================
 
 INDEX_HTML = """
@@ -600,6 +620,11 @@ log_id: ${res.log_id}<br>
 async function collectML(){
     const data = await fetch("/api/ml_collect_5y").then(r => r.json());
 
+    if(data.error){
+        document.getElementById("mlDataBox").innerHTML = `<b>エラー:</b> ${data.error}`;
+        return;
+    }
+
     let html = "<b>【MLデータ収集結果（5年間）】</b><br><br>";
 
     data.forEach(row => {
@@ -623,3 +648,11 @@ window.onload = async () => {
 </html>
 
 """
+
+# ============================================================
+# 12) ルート（HTML返却）
+# ============================================================
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return HTMLResponse(INDEX_HTML)
