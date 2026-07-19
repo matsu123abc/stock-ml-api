@@ -412,6 +412,90 @@ def calc_hv_mid20(ticker, df_month):
         print("calc_hv_mid20 error:", e)
         return None
 
+@app.get("/api/backtest_strategies")
+def api_backtest_strategies():
+    """
+    月次データ（分類＋HV）を使って、
+    各分類でどの戦略が利益を出すかをバックテストする。
+    """
+    try:
+        # ① MLデータ（分類＋HV）を取得
+        ml_data = api_ml_collect_5y()
+        if "error" in ml_data:
+            return ml_data
+
+        # ② 月末株価を取得（5年分）
+        df_price = yf.Ticker("^N225").history(period="5y")
+        df_price["Month"] = df_price.index.to_period("M")
+
+        results = []
+
+        # ③ 戦略の損益計算ロジック（簡易版）
+        def bull_call_spread_pnl(S_next, S, width=500, premium=50):
+            long_strike = S + width
+            short_strike = S + width * 2
+            intrinsic = max(0, S_next - long_strike) - max(0, S_next - short_strike)
+            return intrinsic - premium
+
+        def bear_put_spread_pnl(S_next, S, width=500, premium=40):
+            long_strike = S - width
+            short_strike = S - width * 2
+            intrinsic = max(0, long_strike - S_next) - max(0, short_strike - S_next)
+            return intrinsic - premium
+
+        def straddle_pnl(S_next, S, premium=120):
+            intrinsic = abs(S_next - S)
+            return intrinsic - premium
+
+        # ④ 月次バックテスト
+        for row in ml_data:
+            month = row["month"]
+            pattern = row["pattern_prev"]
+
+            # 前月末の株価
+            df_month = df_price[df_price["Month"] == month]
+            if len(df_month) == 0:
+                continue
+
+            S = float(df_month["Close"].iloc[-1])
+
+            # 翌月末の株価
+            next_month = str((pd.Period(month) + 1))
+            df_next = df_price[df_price["Month"] == next_month]
+            if len(df_next) == 0:
+                continue
+
+            S_next = float(df_next["Close"].iloc[-1])
+
+            # ⑤ 戦略ごとの損益計算
+            strategies = []
+
+            pnl_bull_call = bull_call_spread_pnl(S_next, S)
+            strategies.append(("bull_call_spread", pnl_bull_call))
+
+            pnl_bear_put = bear_put_spread_pnl(S_next, S)
+            strategies.append(("bear_put_spread", pnl_bear_put))
+
+            pnl_straddle = straddle_pnl(S_next, S)
+            strategies.append(("straddle", pnl_straddle))
+
+            # ⑥ 最も利益が出た戦略
+            best_strategy = max(strategies, key=lambda x: x[1])
+
+            results.append({
+                "month": month,
+                "pattern_prev": pattern,
+                "best_strategy": best_strategy[0],
+                "best_pnl": best_strategy[1],
+                "S": S,
+                "S_next": S_next
+            })
+
+        return results
+
+    except Exception as e:
+        return {"error": str(e)}
+
 
 # ============================================================
 # 10) ログ保存 API（UI の logState() が呼ぶ）
@@ -571,6 +655,12 @@ HV (%):<br>
 
 <hr>
 
+<h3>バックテスト（5年間）</h3>
+<button onclick="runBacktest()">バックテストを実行する</button>
+<div id="backtestBox"></div>
+
+<hr>
+
 <script>
 async function loadPrice(){
     const data = await fetch("/api/price").then(r => r.json());
@@ -714,6 +804,30 @@ hv_spx_prev: ${row.hv_spx_prev}<br><br>
     });
 
     document.getElementById("mlDataBox").innerHTML = html;
+}
+
+async function runBacktest(){
+    const data = await fetch("/api/backtest_strategies").then(r => r.json());
+
+    if(data.error){
+        document.getElementById("backtestBox").innerHTML = `<b>エラー:</b> ${data.error}`;
+        return;
+    }
+
+    let html = "<b>【バックテスト結果（5年間）】</b><br><br>";
+
+    data.forEach(row => {
+        html += `
+month: ${row.month}<br>
+pattern_prev: ${row.pattern_prev}<br>
+best_strategy: ${row.best_strategy}<br>
+best_pnl: ${row.best_pnl}<br>
+S: ${row.S}<br>
+S_next: ${row.S_next}<br><br>
+        `;
+    });
+
+    document.getElementById("backtestBox").innerHTML = html;
 }
 
 window.onload = async () => {
