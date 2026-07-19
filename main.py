@@ -819,7 +819,7 @@ document.getElementById("trainBtn").addEventListener("click", async () => {
 
         const data = await response.json();
 
-        if (data.status === "学習完了") {
+        if (data.status && data.status.includes("学習完了")) {
             document.getElementById("trainResult").innerText =
                 "✔ LightGBMモデルの学習が完了しました（" + data.records + "件）";
         } else {
