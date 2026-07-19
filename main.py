@@ -557,10 +557,49 @@ def api_backtest_strategies():
         return {"error": str(e)}
 
 
+from azure.storage.blob import BlobServiceClient
+import pickle
+import os
+
+@app.post("/api/train_lightgbm")
+async def train_lightgbm():
+
+    # Blob 接続（章さんのコードと同じ）
+    blob_service = BlobServiceClient.from_connection_string(
+        os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    )
+    container = blob_service.get_container_client("models")
+
+    # --- ここは学習処理（省略） ---
+    # model_bull, model_bear, model_condor, le が生成される
+
+    # PKL をバイト列に変換
+    def to_bytes(obj):
+        return pickle.dumps(obj)
+
+    # Blob にアップロード（章さんの result_blob と同じ構造）
+    container.get_blob_client("model_bull.pkl").upload_blob(
+        to_bytes(model_bull), overwrite=True
+    )
+    container.get_blob_client("model_bear.pkl").upload_blob(
+        to_bytes(model_bear), overwrite=True
+    )
+    container.get_blob_client("model_condor.pkl").upload_blob(
+        to_bytes(model_condor), overwrite=True
+    )
+    container.get_blob_client("pattern_encoder.pkl").upload_blob(
+        to_bytes(le), overwrite=True
+    )
+
+    return {"status": "学習完了（Blob保存）"}
+
+
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from lightgbm import LGBMRegressor
 import pickle
+import os
+from azure.storage.blob import BlobServiceClient
 
 @app.post("/api/train_lightgbm")
 def train_lightgbm():
@@ -591,7 +630,6 @@ def train_lightgbm():
             "S": df["S"],
             "S_next": df["S_next"],
             "iv_used": df["iv_used"],
-
             "pnl_bull_call_next": df["best_pnl"].where(df["best_strategy"]=="bull_call_spread", 0),
             "pnl_bear_put_next": df["best_pnl"].where(df["best_strategy"]=="bear_put_spread", 0),
             "pnl_iron_condor_next": df["best_pnl"].where(df["best_strategy"]=="iron_condor", 0),
@@ -616,13 +654,24 @@ def train_lightgbm():
         model_bear = LGBMRegressor().fit(X, y_bear)
         model_condor = LGBMRegressor().fit(X, y_condor)
 
-        # ⑧ モデル保存
-        pickle.dump(model_bull, open("model_bull.pkl", "wb"))
-        pickle.dump(model_bear, open("model_bear.pkl", "wb"))
-        pickle.dump(model_condor, open("model_condor.pkl", "wb"))
-        pickle.dump(le, open("pattern_encoder.pkl", "wb"))
+        # ⑧ Blob Storage に保存（章さんの実績コードと同じ構造）
+        blob_service = BlobServiceClient.from_connection_string(
+            os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        )
 
-        return {"status": "学習完了", "records": len(df_train)}
+        container_name = os.getenv("MODEL_CONTAINER", "models")
+        container = blob_service.get_container_client(container_name)
+
+        def upload_pkl(name, obj):
+            blob = container.get_blob_client(name)
+            blob.upload_blob(pickle.dumps(obj), overwrite=True)
+
+        upload_pkl("model_bull.pkl", model_bull)
+        upload_pkl("model_bear.pkl", model_bear)
+        upload_pkl("model_condor.pkl", model_condor)
+        upload_pkl("pattern_encoder.pkl", le)
+
+        return {"status": "学習完了（Blob保存）", "records": len(df_train)}
 
     except Exception as e:
         return {"error": str(e)}
