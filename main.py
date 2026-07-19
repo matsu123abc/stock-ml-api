@@ -207,33 +207,6 @@ HV: {m.hv_20d}
         logger.exception("gpt_predict error")
         return None
 
-# ============================================================
-# 5) GPT→ML 二本立て推論 API
-# ============================================================
-
-@app.post("/api/predict_strategy")
-def api_predict_strategy(m: MarketState):
-    try:
-        gpt = gpt_predict(m)
-        if gpt and gpt.get("strategy"):
-            return {
-                "source": "GPT",
-                "result": gpt,
-                "timestamp": datetime.datetime.utcnow().isoformat(),
-                "request_id": str(uuid.uuid4())
-            }
-
-        strategy, confidence = ml_predict(m)
-        return {
-            "source": "ML",
-            "strategy": strategy,
-            "confidence": confidence,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
-            "request_id": str(uuid.uuid4())
-        }
-    except Exception:
-        logger.exception("api_predict_strategy error")
-        raise HTTPException(status_code=500, detail="prediction failed")
 
 # ============================================================
 # 6) 株価自動取得 API
