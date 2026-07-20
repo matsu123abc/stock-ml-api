@@ -840,27 +840,27 @@ HV (%):<br>
 
 <hr>
 
-<h3>来月の LightGBM 戦略予測（3変数版）</h3>
+<h3>来月の戦略を機械学習(ML)で予測</h3>
 
 <div class="input-block">
-  <label>pattern_prev（UP / DOWN / FLAT / UPDOWN / DOWNUP）:</label>
+  <label>来月の市場予想（UP / DOWN / FLAT / UPDOWN / DOWNUP）:</label>
   <input id="pred_pattern_prev" type="text" placeholder="例: UP">
   <small>大文字で入力してください（UP / DOWN / FLAT / UPDOWN / DOWNUP）</small>
 </div>
 
 <div class="input-block">
-  <label>HV（日経225） hv_n225_prev:</label>
+  <label>ヒストリカルボラティリティ（日経225） hv_n225_prev:</label>
   <input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 0.3522">
   <small>小数表記（例: 0.3522 = 35.22%）</small>
 </div>
 
 <div class="input-block">
-  <label>HV（SPX） hv_spx_prev:</label>
+  <label>ヒストリカルボラティリティ（SPX） hv_spx_prev:</label>
   <input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 0.1517">
   <small>小数表記（例: 0.1517 = 15.17%）</small>
 </div>
 
-<button type="button" onclick="predictStrategy()">来月の戦略を機械学習で予測する </button>
+<button type="button" onclick="predictStrategy()">機械学習(ML)で予測する </button>
 <div id="predictResultBox" class="panel"></div>
 
 <hr>
