@@ -812,8 +812,19 @@ OTM IV (%):<br>
 <input id="days_to_expiry" type="number" placeholder="例: 7">
 
 HV (%):<br>
-<input id="hv_20d" type="number" placeholder="例: 18">
-<button onclick="loadHV()">HVを自動取得する</button>
+
+<div class="input-block">
+  <label>HV（日経225） hv_n225_prev:</label>
+  <input id="pred_hv_n225_prev" type="number" step="0.0001" placeholder="例: 0.3522">
+  <button onclick="loadHV_N225()">HV(N225) を自動取得</button>
+</div>
+
+<div class="input-block">
+  <label>HV（SPX） hv_spx_prev:</label>
+  <input id="pred_hv_spx_prev" type="number" step="0.0001" placeholder="例: 0.1517">
+  <button onclick="loadHV_SPX()">HV(SPX) を自動取得</button>
+</div>
+
 <div id="hvBox"></div>
 
 <hr>
@@ -939,6 +950,28 @@ async function loadHV(){
 <b>【ヒストリカルボラ（20日）】</b><br>
 ${text}
     `;
+}
+
+async function loadHV_N225(){
+    const data = await fetch("/api/hv?ticker=^N225").then(r => r.json());
+    if(data.hv){
+        document.getElementById("pred_hv_n225_prev").value = data.hv.toFixed(4);
+        document.getElementById("hvBoxN225").innerHTML =
+            `<b>HV(N225)</b>: ${(data.hv * 100).toFixed(2)} %`;
+    }else{
+        document.getElementById("hvBoxN225").innerHTML = "HV(N225): データなし";
+    }
+}
+
+async function loadHV_SPX(){
+    const data = await fetch("/api/hv?ticker=^GSPC").then(r => r.json());
+    if(data.hv){
+        document.getElementById("pred_hv_spx_prev").value = data.hv.toFixed(4);
+        document.getElementById("hvBoxSPX").innerHTML =
+            `<b>HV(SPX)</b>: ${(data.hv * 100).toFixed(2)} %`;
+    }else{
+        document.getElementById("hvBoxSPX").innerHTML = "HV(SPX): データなし";
+    }
 }
 
 async function loadAutoMarketView(){
