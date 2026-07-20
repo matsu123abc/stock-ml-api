@@ -845,7 +845,15 @@ HV (%):<br>
 
 <div class="input-block">
   <label>今月の市場動き（UP / DOWN / FLAT / UPDOWN / DOWNUP）:</label>
-  <input id="pred_pattern_prev" type="text" placeholder="例: UP">
+  <select id="pred_pattern_prev">
+    <option value="">選択してください</option>
+    <option value="UP">UP（上昇）</option>
+    <option value="DOWN">DOWN（下落）</option>
+    <option value="FLAT">FLAT（横ばい）</option>
+    <option value="UPDOWN">UPDOWN（上昇→下落）</option>
+    <option value="DOWNUP">DOWNUP（下落→上昇）</option>
+  </select>
+</div>
 
 <div class="input-block">
   <label>今月のヒストリカルボラティリティ（日経225）</label>
@@ -915,9 +923,13 @@ document.getElementById("trainBtn").addEventListener("click", async () => {
 
 <hr>
 
-<h3>HV(SPX)のみを取得</h3>
-<button onclick="loadHV_SPX_bottom()">HV(SPX) を自動取得（下部ボタン）</button>
-<div id="hvBoxSPX_bottom"></div>
+<h3 style="font-size: 24px;">HV(SPX)のみを取得</h3>
+
+<button onclick="loadHV_SPX_bottom()" style="font-size: 20px;">
+    HV(SPX) を自動取得（下部ボタン）
+</button>
+
+<div id="hvBoxSPX_bottom" style="font-size: 22px; font-weight: bold;"></div>
 
 
 <script>
