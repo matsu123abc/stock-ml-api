@@ -243,6 +243,30 @@ def api_hv(ticker: str = "^N225", days: int = 20):
         logger.exception("api_hv error")
         return {"error": "hv fetch failed"}
 
+@app.get("/api/spx_iv")
+def api_spx_iv():
+    import yfinance as yf
+
+    try:
+        # SPX（S&P500）
+        ticker = yf.Ticker("^GSPC")
+
+        # 直近のオプションチェーンを取得
+        expirations = ticker.options
+        if not expirations:
+            return {"iv": None, "error": "No option data"}
+
+        # 最も近い満期を使用
+        chain = ticker.option_chain(expirations[0])
+        calls = chain.calls
+
+        # ATM付近のIVを抽出
+        iv = float(calls['impliedVolatility'].iloc[0])
+
+        return {"iv": iv}
+
+    except Exception as e:
+        return {"iv": None, "error": str(e)}
 
 # ============================================================
 # 8) GPT 市場予想 API
@@ -694,43 +718,6 @@ def api_predict_strategy(m: MLPredictRequest):
     except Exception as e:
         return {"error": str(e)}
 
-
-# ============================================================
-# 10) ログ保存 API（UI の logState() が呼ぶ）
-# ============================================================
-
-LOG_FILE = "market_logs.json"
-
-@app.post("/api/log_market_state")
-def api_log_market_state(payload: dict):
-    try:
-        log_id = str(uuid.uuid4())
-        saved_at = datetime.datetime.utcnow().isoformat()
-        entry = {
-            "log_id": log_id,
-            "saved_at": saved_at,
-            "payload": payload
-        }
-
-        # ファイルに追記（JSON配列形式）
-        if os.path.exists(LOG_FILE):
-            try:
-                with open(LOG_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                data = []
-        else:
-            data = []
-
-        data.append(entry)
-        with open(LOG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        return {"log_id": log_id, "saved_at": saved_at}
-    except Exception:
-        logger.exception("api_log_market_state error")
-        raise HTTPException(status_code=500, detail="log save failed")
-
 # ============================================================
 # 11) HTML（スマホ最適化 UI）
 # ============================================================
@@ -872,12 +859,6 @@ HV (%):<br>
 
 <hr>
 
-<h3>ログ保存</h3>
-<button onclick="logState()">ログ保存する</button>
-<div id="logBox"></div>
-
-<hr>
-
 <h3>MLデータ収集（5年間）</h3>
 <button onclick="collectML()">MLデータ収集する</button>
 <div id="mlDataBox"></div>
@@ -931,8 +912,34 @@ document.getElementById("trainBtn").addEventListener("click", async () => {
 
 <div id="hvBoxSPX_bottom" style="font-size: 22px; font-weight: bold;"></div>
 
+<hr>
+
+<h3 style="font-size: 24px;">SPX IV を取得</h3>
+
+<button onclick="loadSPX_IV()" style="font-size: 20px;">
+    SPX IV を自動取得（下部ボタン）
+</button>
+
+<div id="spxIvBox" style="font-size: 22px; font-weight: bold; margin-top:10px;"></div>
+
 
 <script>
+async function loadSPX_IV(){
+    try {
+        const res = await fetch("/api/spx_iv");  // 既存APIがない場合は後で追加可能
+        const data = await res.json();
+
+        if(data.iv){
+            document.getElementById("spxIvBox").innerHTML =
+                `<b>SPX IV</b>: ${(data.iv * 100).toFixed(2)} %`;
+        } else {
+            document.getElementById("spxIvBox").innerText = "SPX IV: データなし";
+        }
+    } catch (err) {
+        document.getElementById("spxIvBox").innerText = "通信エラー: " + err;
+    }
+}
+
 async function loadHV_SPX_bottom(){
     const data = await fetch("/api/hv?ticker=^GSPC").then(r => r.json());
     if(data.hv){
