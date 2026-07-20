@@ -243,6 +243,7 @@ def api_hv(ticker: str = "^N225", days: int = 20):
         logger.exception("api_hv error")
         return {"error": "hv fetch failed"}
 
+
 # ============================================================
 # 8) GPT 市場予想 API
 # ============================================================
@@ -912,9 +913,29 @@ document.getElementById("trainBtn").addEventListener("click", async () => {
 });
 </script>
 
+<hr>
+
+<h3>HV(SPX)のみを取得</h3>
+<button onclick="loadHV_SPX_bottom()">HV(SPX) を自動取得（下部ボタン）</button>
+<div id="hvBoxSPX_bottom"></div>
 
 
 <script>
+async function loadHV_SPX_bottom(){
+    const data = await fetch("/api/hv?ticker=^GSPC").then(r => r.json());
+    if(data.hv){
+        // 添付画像の「今月のHV(SPX)」欄に自動入力
+        document.getElementById("pred_hv_spx_prev").value = data.hv.toFixed(4);
+
+        // 下部専用の表示領域
+        document.getElementById("hvBoxSPX_bottom").innerHTML =
+            `<b>HV(SPX)</b>: ${(data.hv * 100).toFixed(2)} %`;
+    }else{
+        document.getElementById("hvBoxSPX_bottom").innerHTML =
+            "HV(SPX): データなし";
+    }
+}
+
 async function loadPrice(){
     const data = await fetch("/api/price").then(r => r.json());
     if(data.price){
