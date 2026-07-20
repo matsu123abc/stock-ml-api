@@ -243,30 +243,44 @@ def api_hv(ticker: str = "^N225", days: int = 20):
         logger.exception("api_hv error")
         return {"error": "hv fetch failed"}
 
+
 @app.get("/api/spx_iv")
 def api_spx_iv():
     import yfinance as yf
+    import numpy as np
 
     try:
-        # SPX（S&P500）
         ticker = yf.Ticker("^GSPC")
 
-        # 直近のオプションチェーンを取得
+        # 満期一覧を取得
         expirations = ticker.options
         if not expirations:
-            return {"iv": None, "error": "No option data"}
+            return {"iv": None, "error": "No option expirations"}
 
-        # 最も近い満期を使用
-        chain = ticker.option_chain(expirations[0])
-        calls = chain.calls
+        iv_value = None
 
-        # ATM付近のIVを抽出
-        iv = float(calls['impliedVolatility'].iloc[0])
+        # 近い満期から順番にチェック
+        for exp in expirations[:3]:  # 3つだけ試す（十分）
+            chain = ticker.option_chain(exp)
 
-        return {"iv": iv}
+            # calls が存在するか
+            if chain and hasattr(chain, "calls"):
+                calls = chain.calls
+
+                # IV列が存在するか
+                if "impliedVolatility" in calls.columns:
+                    # NaN を除外
+                    iv_series = calls["impliedVolatility"].dropna()
+
+                    if len(iv_series) > 0:
+                        iv_value = float(iv_series.iloc[0])
+                        break
+
+        return {"iv": iv_value}
 
     except Exception as e:
         return {"iv": None, "error": str(e)}
+
 
 # ============================================================
 # 8) GPT 市場予想 API
